@@ -1,0 +1,768 @@
+---
+title: "Regression analysis: Victoria"
+author: "Hiroshi"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide 
+---
+
+```{r setup, include=FALSE}
+
+# Libraries
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(rgdal)
+library(tidyverse)
+library(cancensus)
+library(ggmap)
+library(stringr)
+library(kableExtra)
+library(htmlTable)
+library(ggsankey)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(keyring)
+library(RPostgreSQL)
+library(rpostgis)
+library(magrittr)
+library(CARBayes)
+
+rm(list=ls())
+
+# Varlist for census 
+source("function/varList.R")
+
+# Canceuss 
+options(cancensus.cache_path = "cache/")
+#set_cancensus_cache_path("cache/", install = TRUE)
+bool_loadCensus = FALSE
+
+
+# FUnctions for data preperation 
+source("function/dataPrep.R")
+source("function/plot_compile.R")
+
+# Description of census variables 
+dfVarDesc <- readRDS("~/projects/intervention_sdoh/data/varDescription.rds")
+
+
+# Plot global params 
+theme_set(theme_classic())
+
+fileLoc <- "data/Vic"
+targetCMA <- "Vic"
+resultLoc <- "result/Vic"
+
+conObesity <- RPostgreSQL::dbConnect("PostgreSQL", host = "132.216.183.3",
+  dbname = "obesity", user = "hiroshi", 
+  password = Sys.getenv("DB3"))
+
+
+# Load 
+dfNetwork <- readRDS(paste(fileLoc,"/modelVars.rds", sep = ""))
+dfNetwork$network_distance <- ifelse(dfNetwork$network_distance < dfNetwork$euc_distance | is.na(dfNetwork$network_distance), dfNetwork$euc_distance, dfNetwork$network_distance) 
+
+
+# remove some varaibles that have too many zeros and thus block categolization by percentile 
+varMedianSplit <- "rec_imm"
+
+```
+
+# Data    
+
+year of analysis: 2011, 2016, and 2021   
+Infra definition follows Benoit's file excluding shallows (the two definitions provided earlier showed identical descriptive statistics, so  only one file is used here)
+
+
+**Variable definitions**   
+All variables are in proportion:   
+  - `visMin`: visible minority  
+  - `aboriginal`: First nation status **too many zeros, not used in the regression analysis that used tertile (not perssible to create percentile)**      
+  - `educ_15`: proportion of residents whose highest education is high school diploma, thus excluding residents whose highest eudcation is post-secondary or no high-school diploma   
+  - `educ_25-64`: same as above, but among those 25-64 years old **not added to the regression analysis**     
+  - `move_5 yrs`: moved past 5 years   
+  - `move_1 yrs`: moved past 1 years **not added to the regression analysis**    
+  - `LICO`: Those under low-income threshold   
+  - `rec_imm`: Recent immigrants (10 years) **Many zeros in Mtl**
+  - `young`: <15 years old   
+  - `old`: >64 years old     
+  - `tenant_30 income`: those paying > 30% income for housing   **Not added to the regression model**   
+  - `tenant`: tenant (not owner)  **Many zeros in Mtl**
+  
+```{r}
+f <- formula(y ~ visMin + aboriginal +educ_15 + move_5yrs + LICO + rec_imm + young + old + tenant + popDensity_per1000)
+
+# SES indicators 
+modelCol <-c("visMin",  "educ_15", "move_5yrs", "LICO", "rec_imm", "young", "old", "tenant", "aboriginal")
+```
+
+  
+
+
+# Descriptive 
+
+### Proportion of DAs included in the analysis, after excluding DAs with missing missing (supresed) census indicators  
+```{r, warning= FALSE}
+cat("2011")
+d <- dfNetwork %>% filter(yearPrevalent==2011)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum /nrow(d)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum
+
+
+cat("2016")
+d <- dfNetwork %>% filter(yearPrevalent==2016)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum /nrow(d)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum
+
+
+cat("2021")
+d <- dfNetwork %>% filter(yearPrevalent==2021)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum /nrow(d)
+d %>% st_drop_geometry() %>% complete.cases() %>% sum
+
+missingIdx <- complete.cases(dfNetwork %>% st_drop_geometry())
+dfNetwork <- dfNetwork[missingIdx,]
+```
+### DAs in the study region with the outcomes, dichotomized access to bike infra and network distance 
+**Year 2011 infra and census**  
+**Only DA with non-missing variables are displayed, whited out areas are missing at least one census variable**
+```{r, fig.width=7, fig.height=7}
+
+
+ggplot(dfNetwork %>% filter(yearPrevalent == 2011)) + 
+  geom_sf(aes(fill = prevalent)) + 
+    theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+
+ggplot(dfNetwork %>% filter(yearPrevalent == 2011)) + 
+  geom_sf(aes(fill=network_distance)) + 
+    theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+```
+
+
+
+### Histogram of census variables, 2011    
+Large number of zero proportions in for educ, recent immigrants, and tenants for Van and Mtl
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+pList <- list()
+yr = 2011
+for(i in gsub("i_", "", dfVarDesc$varName)){
+  d <- dfNetwork %>% st_drop_geometry() %>% filter(yearPrevalent == yr)
+  d <- data.frame(y=d$network_distance, x=d[, i] )
+  pList[[i]] <- ggplot() +
+    geom_histogram(data = d, aes(x=x), bins=20) + 
+    ggtitle(i) 
+}
+do.call("grid.arrange", c(pList, ncol = 4))  
+
+```
+
+### Histogram of census variables, 2016    
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+
+yr = 2016
+for(i in gsub("i_", "", dfVarDesc$varName)){
+  d <- dfNetwork %>% st_drop_geometry() %>% filter(yearPrevalent == yr)
+  d <- data.frame(y=d$network_distance, x=d[, i] )
+  pList[[i]] <- ggplot() +
+    geom_histogram(data = d, aes(x=x), bins=20) + 
+    ggtitle(i) 
+}
+do.call("grid.arrange", c(pList, ncol = 4))  
+
+```
+
+### Histogram of census variables, 2021    
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+
+yr = 2021
+for(i in gsub("i_", "", dfVarDesc$varName)){
+  d <- dfNetwork %>% st_drop_geometry() %>% filter(yearPrevalent == yr)
+  d <- data.frame(y=d$network_distance, x=d[, i] )
+  pList[[i]] <- ggplot() +
+    geom_histogram(data = d, aes(x=x), bins=20) + 
+    ggtitle(i) 
+}
+do.call("grid.arrange", c(pList, ncol = 4))  
+
+
+```  
+
+
+### Corr of each variable  
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+library("ggplot2") 
+library("GGally") 
+dfVarDesc$vatName_real <- gsub("i_", "", dfVarDesc$varName)
+
+datCol  <- dfNetwork %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(all_of(modelCol), yearPrevalent)
+
+colnames(datCol) <- c("Visible min", "High Sch", "Moved", "Low income", "Recent immg", "Children",      "Seniors", "Tenant", "Aboriginal", "year")
+
+datCol <- datCol  %>% 
+ mutate(across(colnames(datCol)[-10], ~round(.x, 3)))
+
+p <-ggpairs(datCol %>% filter(year=="2011") %>% dplyr::select(-year), 
+    upper = list(continuous = wrap("cor", color = "black", size = 3)), 
+    lower = list(continuous = wrap("points", color = "black", size = 0.05))) + theme_classic2(base_size = 7)
+ggsave(plot = p, paste(resultLoc, "/Corr2011.jpg", sep = ""), width = 10, height = 7, unit = "in")
+
+p <-ggpairs(datCol %>% filter(year=="2016") %>% dplyr::select(-year), 
+    upper = list(continuous = wrap("cor", color = "black", size = 3)), 
+    lower = list(continuous = wrap("points", color = "black", size = 0.05))) + theme_classic2(base_size = 7)
+ggsave(plot = p, paste(resultLoc, "/Corr2016.jpg", sep = ""), width = 10, height = 7, unit = "in")
+
+p <-ggpairs(datCol %>% filter(year=="2021") %>% dplyr::select(-year), 
+    upper = list(continuous = wrap("cor", color = "black", size = 3)), 
+    lower = list(continuous = wrap("points", color = "black", size = 0.05))) + theme_classic2(base_size = 7)
+ggsave(plot = p, paste(resultLoc, "/Corr2021.jpg", sep = ""), width = 10, height = 7, unit = "in")
+
+```  
+
+
+### Outcome distribution, distance to bike infras in meter, 
+Distance is **log transformed** (the non-log variables are highly skewed, highly likely to violate OLS assumptions). THus dependent varaiable for the linear model is natual log transformed distance, making the interpretation of regression parameter percent change, unlike Haude study.  
+```{r, fig.width=4, fig.height=4}
+# Distribution of continuous response
+dfNetwork[dfNetwork$yearPrevalent == 2011, ]$network_distance %>% log() %>% hist(main = "Historgram of log distance")
+dfNetwork[dfNetwork$yearPrevalent == 2016, ]$network_distance %>% log() %>% hist(main = "Historgram of log distance")
+dfNetwork[dfNetwork$yearPrevalent == 2021, ]$network_distance %>% log() %>% hist(main = "Historgram of log distance")
+```
+
+
+
+
+
+### Scatter plot of distance (Y) and the proportion of census SES indicators (X), untransformd 
+No linear trends, indicating the needs for transformation, polynomial modeling, or categorization (percentile bin) for valid modeling. I used categorical (tertile) and continuous without transformation (probably invalid) for modeling.   
+#### 2011 , untransformed distance - terrible fit    
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+pList <- list()
+yr = 2011
+for(i in gsub("i_", "", dfVarDesc$varName)){
+  d <- dfNetwork %>% st_drop_geometry() %>% filter(yearPrevalent == yr)
+  d <- data.frame(y=d$network_distance, x=d[, i] )
+  pList[[i]] <- ggplot() +
+    geom_point(data = d, aes(x=x, y=y)) + 
+    ggtitle(i) 
+}
+do.call("grid.arrange", c(pList, ncol = 4))  
+```
+
+#### 2011 , Log transformed distance - still non-linear, but better  
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+pList <- list()
+yr = 2011
+for(i in gsub("i_", "", dfVarDesc$varName)){
+  d <- dfNetwork %>% st_drop_geometry() %>% filter(yearPrevalent == yr)
+  d <- data.frame(y=log(d$network_distance), x=d[, i] )
+  pList[[i]] <- ggplot() +
+    geom_point(data = d, aes(x=x, y=y)) + 
+    ggtitle(i) 
+}
+do.call("grid.arrange", c(pList, ncol = 4))  
+```
+
+
+
+
+# Regression analysis    
+
+Prepare data 
+```{r, fig.height=20, fig.width=3, warning=FALSE}
+
+# log transformed Y and X, not used in this study 
+library(rrapply)
+is.word <- function(x) make.names(x) == x
+insertLog <- function(x) substitute(log(x), list(x = x))
+fLog <- rrapply(f, is.word, insertLog)
+
+# Data to prep simulation  - make 1 percent increment for exposures
+#modelDat <-  dfNetwork %>% 
+##  dplyr::select(all_of(modelCol), popDensity_per1000, yearPrevalent, network_distance, prevalent) %>% 
+#  mutate(across(modelCol, ~.x*10)) %>% 
+#  mutate(across(modelCol, ~scale(.x, scale = F))) %>% 
+#  st_drop_geometry()
+```
+
+
+
+
+### Spatial regression (hierarchical Bayesian) Model and non-spatial model, data prep  
+Note that covariates are scaled to enhance mixing of markov chains for all models below 
+```{r spatial }
+# https://gis.stackexchange.com/questions/413159/how-to-assign-a-neighbour-status-to-unlinked-polygons
+# Data to prep simulation  - make 1 percent increment for exposures
+modelDat <-  dfNetwork %>% 
+  dplyr::select(all_of(modelCol), popDensity_per1000, yearPrevalent, network_distance, prevalent) %>% 
+  mutate(across(modelCol, ~.x*10)) %>% 
+  group_by(yearPrevalent) %>% 
+  mutate(across(modelCol, ~scale(.x, scale = F))) %>% 
+  #mutate(min = scale(min, scale = T), popDensity_per1000 = scale((popDensity_per1000), scale = T))
+  mutate(popDensity_per1000 = scale(log(popDensity_per1000), scale = T))
+
+```
+
+
+#### Spatial weight matrix, isolated (incorrect) and connected graphs (valid for most spatial mixed effect models)    
+For valid results, weight matrices should have:     
+- **symmetric entry**   
+- **no isolated area (no zero in rowsum)**   
+- **no isolated graph: rivers cannot divide the spatial window into several groups (shores) - not imporant for Van and VIC**     
+```{R,  fig.height=12, fig.width=13, warning = FALSE, message = FALSE}  
+library(spdep)
+modelDat$y <- modelDat$network_distance 
+
+wList <- list()
+for(j in c("2011", "2016", "2021")){
+    wList[[j]] <- funcGetW(modelDat, as.numeric(j))
+}
+
+
+### Dianognosis -------------------------------------------
+#head(wList[[1]]$Wnb) # list of areas showing neighbor ID
+#summary(wList[[1]]$Wnb) # Note that one region has no link (neighbour) -- is this realistic? 
+#is.symmetric.nb(wList[[1]]$Wnb) # Neighborhood needs to be symmetric (i.e. area i is neighbour of j, and vice versa)
+
+plot(wList[[1]]$obj,  las=1, main='Connectivity by Shared Borders, isolated graphs by the water', sub = "not quite correct definition of neighbourhood",border = "gray")
+plot(wList[[1]]$Wnb, coordinates(wList[[1]]$obj), pch = 0.1, cex = 0.1, points=FALSE, add=TRUE, col="black") #old (and invalid) spatial relationship
+
+plot(wList[[1]]$obj,  las=1, main='Connectivity by Shared Borders, with fake bridges connecting graphs and excluded DAs due to missing census variables', sub = "Correct definition of neighbourhood for most spatial analysis",border = "gray")
+plot(wList[[1]]$Wnb_mod, coordinates(wList[[1]]$obj), pch = 0.1, cex = 0.1, points=FALSE, add=TRUE, col="black") #old (and invalid) spatial relationship
+```
+
+
+
+#### Run nonspatial (main analysis) and spatial (sub-analysis) OLS modelw,with Leroux CAR prior for spatial random effect 
+##### Fitting with contionus scale of SES varaibles (likely to generate invalid results, results not shown)
+```{r}
+    
+bool_runSpatial = FALSE
+if(bool_runSpatial){
+  fitListLmMonoCAR <- list( "2011"=list(), "2016"=list(), "2021" =list())
+  fitListLmMonoNoCAR <- list( "2011"=list(), "2016"=list(), "2021" =list())
+  modelDat$y <- modelDat$network_distance 
+  
+  for(j in c("2011", "2016", "2021")){
+    for(i in modelCol){
+      d <- modelDat %>% 
+        filter(yearPrevalent == j) %>% 
+        dplyr::select(all_of(i), y, popDensity_per1000) %>% 
+        st_drop_geometry()
+      
+      fitListLmMonoCAR[[j]][[i]] <- S.CARleroux(formula=log(y)~., data=d, family="gaussian", W=wList[[j]]$W_mod, burnin=5000, n.sample=30000, thin=20, n.chains=3, n.cores=3)
+      fitListLmMonoCAR[[j]][[i]]$family = "logGaussianCAR"
+      
+      fitListLmMonoNoCAR[[j]][[i]] = S.glm(formula=log(y)~., data=d, family="gaussian", burnin=5000, n.sample=30000, thin=20, n.chains=3, n.cores=3)
+      fitListLmMonoNoCAR[[j]][[i]]$family = "logGaussianCAR"
+      print(paste(j, i, sep = " ------------------------------------------- "))
+    }
+  }
+  
+  save.image()
+  # Save data 
+  saveRDS(fitListLmMonoCAR, paste(fileLoc,"/CAR.rds", sep = ""))
+  saveRDS(fitListLmMonoNoCAR, paste(fileLoc,"/lm_mcmc.rds", sep = ""))
+} else{
+ # fitListLmMonoCAR <- readRDS(paste(fileLoc,"/CAR.rds", sep = ""))
+  #fitListLmMonoNoCAR <- readRDS(paste(fileLoc,"/lm_mcmc.rds", sep = ""))
+
+}
+```
+
+##### Fitting with categorical SES 
+```{r Categorical OLS CAR}
+#### Categorical SES -------------------------------------------------------------------------------------------------------------------
+
+# Categorical Var
+modelDatCat <-  modelDat %>% 
+    group_by(yearPrevalent) %>% 
+  dplyr::select(all_of(modelCol), popDensity_per1000, yearPrevalent, network_distance, prevalent) %>% 
+  #mutate(across(all_of(modelCol) , ~ funcQuantile(.x, q=3))) %>% 
+  mutate(across(all_of(modelCol[-which(modelCol == varMedianSplit)]) , ~ funcQuantile(.x, q=3))) %>% 
+  #mutate(across(all_of(varMedianSplit) , ~ funcQuantile(.x, q=2))) %>% 
+  data.frame() %>% 
+  st_drop_geometry()   
+
+# Custom subset of low proportion variable 
+modelDatCat <-rbind(
+  modelDatCat %>% 
+    filter(yearPrevalent == "2011") %>% 
+    mutate(across(all_of("rec_imm") , ~ funcQuantile(.x, q=4))),
+  modelDatCat %>% 
+    filter(yearPrevalent == "2016") %>% 
+    mutate(across(all_of("rec_imm") , ~ funcQuantile(.x, q=3))),
+  modelDatCat %>% 
+    filter(yearPrevalent == "2021") %>% 
+    mutate(across(all_of("rec_imm") , ~ funcQuantile(.x, q=3)))
+)
+
+# Outcome 
+modelDatCat$y <- modelDatCat$network_distance 
+
+
+  
+bool_runSpatial_categorySES = FALSE
+if(bool_runSpatial_categorySES){
+  
+  fitListLmMonoCAR_cat <- list( "2011"=list(), "2016"=list(), "2021" =list())
+  fitListLmMonoNoCAR_cat <- list( "2011"=list(), "2016"=list(), "2021" =list())
+  
+  for(j in c("2011", "2016", "2021")){
+    for(i in modelCol){
+      d <- modelDatCat %>% 
+        filter(yearPrevalent == j) %>% 
+        dplyr::select(all_of(i), y, popDensity_per1000) 
+        
+      d[, i] <- droplevels(d[,i])
+      
+      fitListLmMonoCAR_cat[[j]][[i]] <- S.CARleroux(formula=log(y)~., data=d, family="gaussian", W=wList[[j]]$W_mod, burnin=5000, n.sample=100000, thin=20, n.chains=3, n.cores=3)
+      fitListLmMonoCAR_cat[[j]][[i]]$family = "logGaussianCAR_cat"
+      
+      fitListLmMonoNoCAR_cat[[j]][[i]] = S.glm(formula=log(y)~., data=d, family="gaussian", burnin=5000, n.sample=30000, thin=20, n.chains=3, n.cores=3)
+      fitListLmMonoNoCAR_cat[[j]][[i]]$family = "logGaussianCAR_cat"
+      print(paste(j, i, sep = " ------------------------------------------- "))
+    }
+  }
+  
+  save.image()
+  # Save data 
+  saveRDS(fitListLmMonoCAR_cat, paste(fileLoc,"/CAR_cat.rds", sep = ""))
+  saveRDS(fitListLmMonoNoCAR_cat, paste(fileLoc,"/lm_mcmc_cat.rds", sep = ""))
+} else{
+  fitListLmMonoCAR_cat <- readRDS(paste(fileLoc,"/CAR_cat.rds", sep = ""))
+  fitListLmMonoNoCAR_cat <- readRDS(paste(fileLoc,"/lm_mcmc_cat.rds", sep = ""))
+  
+    # Give a label for family and variable type 
+  fitListLmMonoCAR_cat[["2011"]] <- lapply(fitListLmMonoCAR_cat[["2011"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+  fitListLmMonoCAR_cat[["2016"]] <- lapply(fitListLmMonoCAR_cat[["2016"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+  fitListLmMonoCAR_cat[["2021"]] <- lapply(fitListLmMonoCAR_cat[["2021"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+  
+  fitListLmMonoNoCAR_cat[["2011"]] <- lapply(fitListLmMonoNoCAR_cat[["2011"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+  fitListLmMonoNoCAR_cat[["2016"]] <- lapply(fitListLmMonoNoCAR_cat[["2016"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+  fitListLmMonoNoCAR_cat[["2021"]] <- lapply(fitListLmMonoNoCAR_cat[["2021"]], function(x){ x$family = "logGaussianCAR_cat"; return(x)})
+}
+```
+
+##### Fitting Logit spatial model- Leroux CAR model (NOT RUN)
+```{r logit CAR}
+bool_runSpatialBin = FALSE
+if(bool_runSpatialBin){
+  fitListBinMonoCAR <- list( "2011"=list(), "2016"=list(), "2021" =list())
+  fitListBinMonoNoCAR<- list( "2011"=list(), "2016"=list(), "2021" =list())
+  modelDatCat$y <- ifelse(modelDat$prevalent == "WithInfra", 1,)
+  
+  for(j in c("2011", "2016", "2021")){
+    for(i in modelCol){
+      d <- modelDatCat %>% 
+        filter(yearPrevalent == j) %>% 
+        dplyr::select(all_of(i), y, popDensity_per1000) %>% 
+        st_drop_geometry()
+
+      fitListBinMonoCAR[[j]][[i]] <- S.CARleroux(formula=y~., data=d, family="binomial", W=wList[[j]]$W_mod, burnin=15000, n.sample=50000, thin=1, n.chains=3, n.cores=3, trials = rep(1,nrow(d)))
+      
+      fitListBinMonoCAR[[j]][[i]]$family = "binomialCAR"
+      
+      fitListBinMonoNoCAR[[j]][[i]] = S.glm(formula=y~., data=d, family="binomial", burnin=15000, n.sample=50000, thin=10, n.chains=3, n.cores=3, trials = rep(1,nrow(d)))
+      fitListBinMonoNoCAR[[j]][[i]]$family = "binomial"
+      print(paste(j, i, sep = " ------------------------------------------- "))
+    }
+  }
+  
+  #fitListBinMonoNoCAR[["2011"]][["visMin"]]$samples$beta[[1]][, 3] %>%  plot()
+  save.image()
+  
+  # Save data 
+  saveRDS(fitListBinMonoCAR, paste(fileLoc,"/CARbin.rds", sep = ""))
+  saveRDS(fitListBinMonoNoCAR, paste(fileLoc,"/bin_mcmc.rds", sep = ""))
+}
+
+```
+
+### Check of model fit between spatial and non-spatial model, based on Watanabe-Akaike Information Criterion, lower value indicates better git 
+```{r, warning=FALSE}
+lapply(
+  #fitListLmMonoCAR[["2011"]], function(x) x$modelfit[3]) %>% 
+  #cbind(lapply(fitListLmMonoNoCAR[["2011"]], function(x) x$modelfit[3])) %>% 
+  fitListLmMonoCAR_cat[["2011"]], function(x) x$modelfit[3]) %>% 
+  cbind(lapply(fitListLmMonoNoCAR_cat[["2011"]], function(x) x$modelfit[3])) %>% 
+  data.frame %>% 
+  setNames(c("CAR_cat", "noCAR_cat")) 
+```
+
+  
+
+
+
+### Table of results, OLS models that fits each SES variables and years separately.
+**Interpretation** Since the distance variable (Y) was natural log transformed to mitigate terrible fit, the interpretation of the ses variables for the linear models are *percent* change. Specifically, the OLS coefficients indicate:   
+**% changes in distance to bike infras by tertile level, relative to the distance at the lowest tertile level ( reference)** 
+
+**Thus, higher values indicate worse access**.   
+
+
+Results of logit model is not displayed here
+
+
+### Forestplots for category SES vars
+**Non-spatial models**
+```{r, message = FALSE}
+tb <- funcGetCoefTable(fitListLmMonoNoCAR_cat[["2011"]], categoryVar = T) %>% mutate(ID = 1:n()) %>% 
+  full_join(funcGetCoefTable(fitListLmMonoNoCAR_cat[["2016"]], categoryVar = T) %>% mutate(ID = 1:n()), 
+  by = "Var2") %>% 
+  full_join(funcGetCoefTable(fitListLmMonoNoCAR_cat[["2021"]], categoryVar = T) %>% mutate(ID = 1:n()), 
+  by = "Var2") %>% 
+  arrange(ID) %>% 
+  dplyr::select(-c(Var2, ID.x, Var.y, Var.x, ID.y, ID)) %>% 
+  dplyr::select(Var, everything()) %>% 
+  setNames(c("Var", rep(c("Mean (95% CI)"), 3))) 
+
+
+a <- gsub("i_", "", dfVarDesc$varName)
+b <- dfVarDesc$shortDesc
+c <- tb$Var
+
+
+repl <- tb$Var
+for(i in seq_along(a)) repl <- gsub(a[i], b[i], repl, fixed = FALSE)
+tb$Var <- repl
+
+tb %>% 
+  funcMakeTable(Title = "Categorical (tertile) SES for each model, Non spatial model", rowlines = c(3, 6, 9, 12, 15, 18, 21, 24))
+
+library(flextable)
+library(officer)
+
+write.table(tb, file = paste(resultLoc, "/coefTable.csv", sep = ""), sep = ",", quote = FALSE, row.names = T)
+
+save_as_docx(
+  "my table 1" = tb,  path = paste(resultLoc, "/coefTable.docx", sep = ""))  
+  
+  
+```
+
+**Spatial models**    
+**Note that spatial model's fixed effects are shrunk towards zero after accouting for latent spatial effects captured by random effects, potentially due to spatial confounding**    
+```{r, message = FALSE}
+tb <- funcGetCoefTable(fitListLmMonoCAR_cat[["2011"]], categoryVar = T) %>% mutate(ID = 1:n()) %>% 
+  full_join(funcGetCoefTable(fitListLmMonoCAR_cat[["2016"]], categoryVar = T) %>% mutate(ID = 1:n()), 
+  by = "Var2") %>% 
+  full_join(funcGetCoefTable(fitListLmMonoCAR_cat[["2021"]], categoryVar = T) %>% mutate(ID = 1:n()), 
+  by = "Var2") %>% 
+  arrange(ID) %>% 
+  dplyr::select(-c(Var2, ID.x, Var.y, Var.x, ID.y, ID)) %>% 
+  dplyr::select(Var, everything()) %>% 
+  setNames(c("Var", rep(c("Mean (95% CI)"), 3))) 
+
+a <- gsub("i_", "", dfVarDesc$varName)
+b <- dfVarDesc$shortDesc
+c <- tb$Var
+
+repl <- tb$Var
+for(i in seq_along(a)) repl <- gsub(a[i], b[i], repl, fixed = FALSE)
+tb$Var <- repl
+
+tb %>% 
+  funcMakeTable(Title = "Categorical (tertile) SES for each model, Leroux CAR spatial model", rowlines = c(3, 6, 9, 12, 15, 18, 21, 24))
+
+library(flextable)
+library(officer)
+
+write.table(tb, file = paste(resultLoc, "/coefTable_spatial.csv", sep = ""), sep = ",", quote = FALSE, row.names = T)
+
+save_as_docx(
+  "my table 1" = tb,  path = paste(resultLoc, "/coefTable_spatial.docx", sep = ""))  
+
+```
+
+
+
+Codes to prepare data for graphing 
+```{r, fig.height=15, fig.width=3, warning=FALSE}
+
+funcGetCategoricalBetCarModel <- function(dList, year){
+  lapply(dList[[as.character(year)]], funcGetCoef) %>%
+    lapply(data.frame) %>% 
+    lapply(function(x){ x %>% dplyr::filter(!rownames(x) %in% c("popDensity_per1000", "nu2", "tau2", "rho", "(Intercept)" ))}) %>%
+    bind_rows() %>% 
+    mutate(yr = as.numeric(year)) %>% 
+    rownames_to_column("Var") 
+}
+
+
+fitLmMonoCAR_cat <- rbind(
+  fitListLmMonoCAR_cat %>% funcGetCategoricalBetCarModel(2011), 
+  fitListLmMonoCAR_cat %>% funcGetCategoricalBetCarModel(2016), 
+  fitListLmMonoCAR_cat %>% funcGetCategoricalBetCarModel(2021) 
+) %>% 
+  mutate(varName = str_sub(Var, 1, -2), varCat = str_sub(Var, -1, -1))
+
+fitLmMonoNoCAR_cat <- rbind(
+  fitListLmMonoNoCAR_cat %>% funcGetCategoricalBetCarModel(2011), 
+  fitListLmMonoNoCAR_cat %>% funcGetCategoricalBetCarModel(2016), 
+  fitListLmMonoNoCAR_cat %>% funcGetCategoricalBetCarModel(2021) 
+) %>% 
+  mutate(varName = str_sub(Var, 1, -2), varCat = str_sub(Var, -1, -1))
+```
+
+
+
+
+
+#### Plots for regression coefficients of tertile SES variables, non-spatial model 
+```{r, fig.height=10, fig.width=9, warning=FALSE}
+theme_barPlotText <-  theme(        
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 13), 
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"), 
+    title = element_text(size = 11)
+)
+
+
+pList <- list()
+
+for(i in modelCol){
+  dPlot <- fitLmMonoNoCAR_cat[fitLmMonoNoCAR_cat$varName == i, ] %>% 
+    data.frame
+  
+  
+    a <- gsub("i_", "", dfVarDesc$varName)
+    b <- dfVarDesc$shortDesc
+    repl <- i
+    for(k in seq_along(a)) repl <- gsub(a[k], b[k], repl, fixed = FALSE)
+    titleVarName <- repl
+  
+  pList[[i]] <- ggplot(data=dPlot, aes(y=Mean, x=factor(yr), color = varCat, shape = varCat)) + 
+    geom_pointrange(aes(ymin = Lower, ymax = Upper), position = position_jitterdodge(jitter.width = 0.2), 
+    dodge.width = 0.4,) + 
+    ylim(c(-100, 350)) +
+    geom_hline(yintercept=0, linetype="dashed", color = "black", linewidth=0.5) +
+    ggtitle(titleVarName) + 
+    xlab("Year") + ylab("Percent change") +
+    scale_color_manual(
+      values = c("red","blue"), 
+      name = "Tertile of proportion", 
+      labels = c("Middle", "Highest tertitle")) +
+    scale_shape_manual(
+      values = c(17,19), 
+      name = "Tertile of proportion", 
+      labels = c("Middle", "Highest tertitle"))  + 
+    theme_barPlotText
+}
+
+#do.call("grid.arrange", c(pList, ncol = 3))  
+#ggarrange(plotlist = pList, ncol=4, nrow=2, common.legend = TRUE, legend="bottom")
+ggarrange(plotlist = lapply(pList, "+", rremove("ylab")), ncol=4, nrow = 3, common.legend = TRUE, legend = "bottom") %>% 
+  annotate_figure(left = textGrob("Percent change in distance relative to first tertile", rot = 90, vjust = 1, gp = gpar(cex = 1.1)))
+
+
+ggsave(paste(resultLoc, "/OLS.jpg", sep = ""), height = 10, width=9.5, units = "in")
+
+```
+
+#### Plots for regression coefficients of tertile SES variables, spatial model 
+**Again, note the huge attenuation of the estiamted mean of fixed effects, albeit smaller standard errors (higher precision)**
+```{r, fig.height=10, fig.width=9, warning=FALSE}
+pList <- list()
+
+for(i in modelCol){
+  dPlot <- fitLmMonoCAR_cat[fitLmMonoCAR_cat$varName == i, ] %>% 
+    data.frame
+  
+    a <- gsub("i_", "", dfVarDesc$varName)
+    b <- dfVarDesc$shortDesc
+    repl <- i
+    for(k in seq_along(a)) repl <- gsub(a[k], b[k], repl, fixed = FALSE)
+    titleVarName <- repl
+  
+  pList[[i]] <- ggplot(data=dPlot, aes(y=Mean, x=factor(yr), color = varCat, shape = varCat)) + 
+    geom_pointrange(aes(ymin = Lower, ymax = Upper), position = position_jitterdodge(jitter.width = 0.2), 
+    dodge.width = 0.4,) + 
+    ylim(c(-100, 350)) +
+    geom_hline(yintercept=0, linetype="dashed", color = "black", linewidth=0.5) +
+    ggtitle(titleVarName) + 
+    xlab("Year") + ylab("Percent change") +
+    scale_color_manual(
+      values = c("red","blue"), 
+      name = "Tertile of proportion", 
+      labels = c("Middle", "Highest tertitle")) +
+    scale_shape_manual(
+      values = c(17,19), 
+      name = "Tertile of proportion", 
+      labels = c("Middle", "Highest tertitle")) +
+    theme_barPlotText
+}
+
+#do.call("grid.arrange", c(pList, ncol = 3))  
+#ggarrange(plotlist = pList, ncol=4, nrow=2, common.legend = TRUE, legend="bottom")
+ggarrange(plotlist = lapply(pList, "+", rremove("ylab")), ncol=4, nrow = 3, common.legend = TRUE, legend = "bottom") %>% 
+  annotate_figure(left = textGrob("Percent change in distance relative to first tertile", rot = 90, vjust = 1, gp = gpar(cex = 1.1)))
+
+
+ggsave(paste(resultLoc, "/OLS_spatial.jpg", sep = ""), height = 10, width=9.5, units = "in")
+
+```
+
+
+
+
+
+
+
+
+#### Show a subset of markov chain convergence, OLS with categorical varaibles
+Unfold codes to see which SES variable and parameters were monitored for convergence 
+```{r diagnosis_categoricalSPaital, fig.height42, fig.width=7}
+
+fitListLmMonoCAR_cat[["2011"]][["visMin"]]$samples$beta[[2]][, 2] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["young"]]$samples$beta[[2]][, 2] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["tenant"]]$samples$beta[[2]][, 2] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["LICO"]]$samples$beta[[2]][, 2] %>%  plot()
+
+fitListLmMonoCAR_cat[["2011"]][["visMin"]]$samples$tau2[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["young"]]$samples$tau2[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["tenant"]]$samples$tau2[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["LICO"]]$samples$tau2[[2]] %>%  plot()
+
+fitListLmMonoCAR_cat[["2011"]][["visMin"]]$samples$nu[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["young"]]$samples$nu[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["tenant"]]$samples$nu[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["LICO"]]$samples$nu[[2]] %>%  plot()
+
+fitListLmMonoCAR_cat[["2011"]][["visMin"]]$samples$rho[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["young"]]$samples$rho[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["tenant"]]$samples$rho[[2]] %>%  plot()
+fitListLmMonoCAR_cat[["2011"]][["LICO"]]$samples$rho[[2]] %>%  plot()
+```
+
+
+
+
+
+

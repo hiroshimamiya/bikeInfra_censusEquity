@@ -1,0 +1,594 @@
+---
+title: "CensusMap_Descriptive"
+author: "H"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+Following codes create the map of socio-economic and demographic indicators from the data frame containing census vector of each year, which was created in the `censusVar_Mapping.Rmd` script. 
+
+Also saves census data locally `data/city/listCen.rds`
+And Saves DA shape files to remote DB as well, to be intersected to intervention lines. 
+
+
+```{r setup, message=FALSE, warning=FALSE}
+
+# Libraries
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(rgdal)
+library(tidyverse)
+library(cancensus)
+library(ggmap)
+library(stringr)
+library(kableExtra)
+library(htmlTable)
+library(ggsankey)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(RPostgres)
+library(rpostgis)
+library(readxl)
+
+rm(list=ls())
+
+# Varlist for census 
+source("function/varList.R")
+
+# Canceuss 
+#options(cancensus.cache_path = "cache/")
+#set_cancensus_cache_path("cache/", install = TRUE)
+options(cancensus.cache_path = "cache/.cancensus_cache")
+
+bool_loadCensus = FALSE
+
+# Plot global params 
+theme_set(theme_classic())
+theme_set(
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+)
+
+# FUnctions for data preperation 
+source("function/dataPrep.R")
+
+# Load census vector names for each year 
+dfCensVec <- readRDS("data/censMappedVars.rds")
+
+```
+
+
+
+
+
+
+Download census data based on the identified vector names, and create proporiton measures for each dissemination area. Rehspaed for facet map originally, but protting through looping. 
+```{r}
+funcGetCensVector <- function(df, dfVarDesc){
+  # Calculate proportions
+  df <- funcCensusIndicator(df)
+  
+  # Make it long if used for facet plot  
+  dfMapLong <- df %>% 
+    select(starts_with("i_")) %>% 
+    pivot_longer(cols = starts_with("i_"), names_to = "x",values_to = "y")
+  
+  # Join sf with variable description
+  dfMapLong <- dfMapLong %>% 
+    left_join(dfVarDesc, by = c("x"="varName"))
+  
+  return(dfMapLong)
+}
+
+
+#csd_mtl <- c("2466127", "2466117", "2465005", "2466112","2466007", "2466023", "2466087", "2466097", "2466032", "2466107" , "2458227", "2458007")
+```
+
+
+### 2021 data 
+```{r}
+# Following codes will extract the census vectors, along with polygons 
+b <- dfCensVec %>% pull(X2021)
+b <- setNames(b, rownames(dfCensVec)) # Make it named vector so that variable names will be passed to extracted census vars  
+
+mtl_2021 <- funcGetCenMontreal("CA21", b)  %>%
+  st_transform(crs = 2959)
+
+vic_2021 <- get_census(dataset='CA21', 
+  regions=list(CSD = c("5917034")),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY")) %>%
+  st_transform(crs = 3005)
+
+van_2021 <- get_census(dataset='CA21', 
+  regions=list(CSD = "5915022"),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY")) %>%
+  st_transform(crs = 3153)
+
+sk_2021 <- get_census(dataset='CA21', 
+  regions=list(CSD = "4711066"),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY"))
+
+
+
+```
+
+
+### 2016 census 
+```{r}
+# Following codes will extract the census vectors, along with polygons 
+b <- dfCensVec %>% pull(X2016)
+b <- setNames(b, rownames(dfCensVec)) # Make it named vector so that variable names will be passed to extracted census vars  
+
+
+mtl_2016 <- funcGetCenMontreal("CA16", b) %>%
+  st_transform(crs = 2959)
+
+vic_2016 <- get_census(dataset='CA16', 
+  regions=list(CSD = c("5917034")),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY"))%>%
+  st_transform(crs = 3005)
+
+van_2016 <- get_census(dataset='CA16', 
+  regions=list(CSD = "5915022"),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY")) %>%
+  st_transform(crs = 3153)
+
+sk_2016 <- get_census(dataset='CA16', 
+  regions=list(CSD = "4711066"),
+  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY"))
+
+
+
+
+```
+
+### 2011 census 
+```{r}
+b11 <- dfCensVec %>% pull(X2011)
+b11 <- setNames(b11, rownames(dfCensVec)) # Make it named vector 
+
+nameVec_age_1_14 <- paste("age_1_14_count",1:3, sep = "_")
+nameVec_age_15_64 <- paste("age_15_64_count",1:14, sep = "_")
+
+# Create extract individual census vector and get element names 
+b11 <- c(b11, 
+  str_split(b11[names(b11) == "age_1_14_count"], ":") %>%  unlist() %>% setNames(nameVec_age_1_14 ),
+  str_split(b11[names(b11) == "age_15_64_count"], ":") %>%  unlist() %>% setNames(nameVec_age_15_64)
+)
+b11 <- b11[-c(grep(":", b11))] # remove array for age groups
+b11 <- b11[!is.na(b11)] # remove NA for age 64 or greater, as it will be caclulated from other census vars 
+
+
+
+### MTl 
+#Mtl_2011<- get_census(dataset='CA11', 
+#  regions=list(CSD = csd_mtl),
+#  vectors=b11, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+#  api_key = Sys.getenv("CM_API_KEY"))
+
+mtl_2011 <- funcGetCenMontreal("CA11", b11) %>%
+  st_transform(crs = 2959)
+
+mtl_2011$age_1_14_count <- mtl_2011 %>% 
+  st_drop_geometry() %>%  
+  select(starts_with("age_1_14")) %>%
+  rowwise() %>% 
+  rowSums(na.rm = FALSE) 
+
+mtl_2011$age_15_64_count <- 
+  mtl_2011 %>% 
+  st_drop_geometry() %>%  
+  select(starts_with("age_15_64")) %>% 
+  rowwise() %>% 
+  rowSums(na.rm = FALSE)
+
+mtl_2011 <- mtl_2011 %>% 
+  mutate(age_64_over = age_denom - (age_15_64_count + age_1_14_count)) 
+
+### Victoria
+vic_2011 <- get_census(dataset='CA11', 
+  regions=list(CSD = "5917034"),
+  vectors=b11, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY")) %>%
+  st_transform(crs = 3005)
+
+vic_2011$age_1_14_count <- vic_2011 %>% st_drop_geometry() %>%  select(starts_with("age_1_14")) %>% rowwise() %>% rowSums(na.rm = FALSE)
+vic_2011$age_15_64_count <- vic_2011 %>% st_drop_geometry() %>%  select(starts_with("age_15_64")) %>% rowwise() %>% rowSums(na.rm = FALSE)
+
+vic_2011 <- vic_2011 %>% mutate(age_64_over = age_denom - (age_15_64_count + age_1_14_count)) 
+
+
+
+### Vancouver 
+van_2011 <- get_census(dataset='CA11', 
+  regions=list(CSD = "5915022"),
+  vectors=b11, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY")) %>%
+  st_transform(crs = 3153)
+
+van_2011$age_1_14_count <- van_2011 %>% st_drop_geometry() %>%  select(starts_with("age_1_14")) %>% rowwise() %>% rowSums(na.rm = FALSE)
+van_2011$age_15_64_count <- van_2011 %>% st_drop_geometry() %>%  select(starts_with("age_15_64")) %>% rowwise() %>% rowSums(na.rm = FALSE)
+
+van_2011 <- van_2011 %>% mutate(age_64_over = age_denom - (age_15_64_count + age_1_14_count)) 
+
+
+### SK
+#sk_2011 <- get_census(dataset='CA11', 
+#  regions=list(CSD = "4711066"),
+#  vectors=b11, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+#  api_key = Sys.getenv("CM_API_KEY"))
+#
+#sk_2011$age_1_14_count <- sk_2011 %>% 
+#  st_drop_geometry() %>%  
+#  select(starts_with("age_1_14")) %>% 
+#  rowwise() %>% rowSums(na.rm = FALSE)
+#
+#sk_2011$age_15_64_count <- sk_2011 %>% 
+#  st_drop_geometry() %>%
+#  select(starts_with("age_15_64")) %>% 
+#  rowwise() %>% rowSums(na.rm = FALSE)
+#
+#sk_2011 <- sk_2011 %>% 
+#  mutate(age_64_over = age_denom - (age_15_64_count + age_1_14_count)) 
+```
+
+
+
+
+### Get population rep points for Mtl , lon and lat are attached to each DA from canCensus 
+```{r}
+#length(unique(da$DAUID_ADIDU)) 6574
+#length(unique(da$DARPLAT_ADLAT)) 6518
+#length(unique(da$DARPLONG_ADLONG)) #6539
+
+da <- read_csv("data/DA_center/2021_92_151_X.csv") %>% 
+  filter(CMAPUID_RMRPIDU ==24462)
+da_rep2021 <- da  %>%
+  select(DAUID_ADIDU, DARPLONG_ADLONG, DARPLAT_ADLAT) %>% 
+  group_by(DAUID_ADIDU, DARPLONG_ADLONG, DARPLAT_ADLAT) %>% 
+  rename(dauid = DAUID_ADIDU, da_long = DARPLONG_ADLONG, da_lat = DARPLAT_ADLAT) %>% 
+  summarise()  %>%  
+  st_as_sf(coords = c("da_long", "da_lat"), crs = 4326, agr = "constant") %>%  
+  st_transform(2959)
+  #st_as_sf(coords = c("da_long", "da_lat"), crs = 4326, agr = "constant")
+
+
+da <-read_excel("data/DA_center/2016_92_151_XBB.xlsx")
+da_rep2016 <- da %>% 
+  filter(`CMAuid/RMRidu` == 462) %>% 
+  select(`DAuid/ADidu`, `DArplong/ADlong`, `DArplat/ADlat`) %>%  
+  rename(dauid = `DAuid/ADidu`, da_long = `DArplong/ADlong`, da_lat = `DArplat/ADlat`) %>%  
+  group_by(dauid, da_long, da_lat) %>%  
+  summarise() %>%  
+  st_as_sf(coords = c("da_long", "da_lat"), crs = 4326, agr = "constant") %>%  
+  st_transform(2959)
+
+
+da <-  read_excel("data/DA_center/2011_92-151_XBB_XLSX _columnName.xlsx")
+da_rep2011 <- da %>% 
+  filter(cmapuid  == 24462) %>% 
+  select(DAuid, da_long, da_lat) %>%  
+  rename(dauid = DAuid) %>% 
+  group_by(dauid, da_long, da_lat) %>%  
+  summarise() %>%  
+  st_as_sf(coords = c("da_long", "da_lat"), crs = 4326, agr = "constant") %>%  
+  st_transform(2959)
+
+```
+
+
+
+### Map population representative points   
+```{r}
+imp <- st_intersection(da_rep2021, mtl_2021)
+ggplot(mtl_2011) +
+  geom_sf(inherit.aes = FALSE, aes(fill = NULL), size =0.1, color= "black") + 
+  geom_sf(data = imp, size =0.1) + 
+  theme(legend.position = "bottom") + 
+  theme(legend.text=element_text(size=9))
+
+
+
+
+imp <- st_intersection(da_rep2011, mtl_2011)
+ggplot(mtl_2011) +
+  geom_sf(inherit.aes = FALSE, aes(fill = NULL), size =0.5, color= "black") + 
+  geom_sf(data = imp, size =0.1) + 
+  theme(legend.position = "bottom") + 
+  theme(legend.text=element_text(size=9))
+
+
+
+
+imp <- st_intersection(da_rep2016, mtl_2016)
+ggplot(mtl_2016) +
+  geom_sf(inherit.aes = FALSE, aes(fill = NULL), size =0.5, color= "black") + 
+  geom_sf(data = imp, size =0.1) + 
+  theme(legend.position = "bottom") + 
+  theme(legend.text=element_text(size=9))
+
+```
+
+
+
+
+### Calculate distance Metro from each da in postgis
+### Distance calc done by `distance_metroPoints.sql`
+```{r}
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_mtl_2021"), geometry_column ="geometry" ) # Euc distance 
+mtl_2021 <- mtl_2021 %>% 
+  mutate(GeoUID = as.numeric(GeoUID)) %>% 
+  left_join(metroDist %>% st_drop_geometry(), by = join_by(GeoUID == dauid))
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_mtl_2016"), geometry_column ="geometry" ) # Euc distance 
+mtl_2016 <- mtl_2016 %>% 
+  mutate(GeoUID = as.numeric(GeoUID)) %>% 
+  left_join(metroDist %>% st_drop_geometry() %>% mutate(dauid = as.numeric(dauid)), by = join_by(GeoUID == dauid))
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_mtl_2011"), geometry_column ="geometry" ) # Euc distance 
+mtl_2011 <- mtl_2011 %>% 
+  mutate(GeoUID = as.numeric(GeoUID)) %>% 
+  left_join(metroDist %>% st_drop_geometry() %>% mutate(dauid = as.numeric(dauid)), by = join_by(GeoUID == dauid))
+
+
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_van_2021"), geometry_column ="geometry" ) # Euc distance 
+van_2021 <-van_2021 %>% 
+  left_join(metroDist %>% st_drop_geometry() , by = join_by(GeoUID == GeoUID))
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_van_2016"), geometry_column ="geometry" ) # Euc distance 
+van_2016 <- van_2016 %>% 
+  left_join(metroDist %>% st_drop_geometry(), by = join_by(GeoUID == GeoUID))
+
+metroDist <- st_read(conObesity, layer =  c("hiroshi", "da_metro_van_2011"), geometry_column ="geometry" ) # Euc distance 
+van_2011 <- van_2011 %>% 
+  left_join(metroDist %>% st_drop_geometry() , by = join_by(GeoUID == GeoUID))
+
+
+```
+
+
+### Pop density  
+```{r}
+library(magrittr)
+van_2011  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+van_2016  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+van_2021  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+mtl_2011  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+mtl_2016  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+mtl_2021  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+vic_2011  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+vic_2016  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+vic_2021  %<>%  mutate(popDensity_per1000 = Population/`Shape Area`/1000)
+
+ggplot() + 
+  geom_sf(data = van_2016, aes(fill= popDensity_per1000))
+
+```
+
+
+### Save data 
+```{r save data}
+
+### Representative points - Mtl only ----------------------
+st_write( obj = da_rep2021, dsn = conObesity , layer = 'da_interact_mtl_2021_representative', delete_layer = TRUE)
+st_write( obj = da_rep2016, dsn = conObesity , layer = 'da_interact_mtl_2016_representative', delete_layer = TRUE)
+st_write( obj = da_rep2011, dsn = conObesity , layer = 'da_interact_mtl_2011_representative', delete_layer = TRUE)
+
+
+### Montreal -----------------------------------------------------------------------------------------------
+listCenAll <- list()
+listCenAll[["2021"]] <- mtl_2021 %>% funcCensusIndicator 
+listCenAll[["2016"]] <- mtl_2016 %>% funcCensusIndicator
+listCenAll[["2011"]] <- mtl_2011 %>% funcCensusIndicator %>% select(-all_of(c(nameVec_age_15_64, nameVec_age_1_14)))
+saveRDS(listCenAll, paste("data/Mtl/listCen.rds", sep = ""))
+
+st_write( obj = listCenAll[["2021"]], dsn = conObesity , layer = 'da_interact_mtl_2021', delete_layer = TRUE)
+st_write( obj = listCenAll[["2016"]], dsn = conObesity , layer = 'da_interact_mtl_2016', delete_layer = TRUE)
+st_write( obj = listCenAll[["2011"]], dsn = conObesity , layer = 'da_interact_mtl_2011', delete_layer = TRUE)
+
+### Victoria --------------------------------------------------------------------------------------------------
+listCenAll <- list()
+listCenAll[["2021"]] <- vic_2021 %>% funcCensusIndicator
+listCenAll[["2016"]] <- vic_2016 %>% funcCensusIndicator
+listCenAll[["2011"]] <- vic_2011 %>% funcCensusIndicator %>% select(-all_of(c(nameVec_age_15_64, nameVec_age_1_14)))
+saveRDS(listCenAll, paste("data/Vic/listCen.rds", sep = ""))
+
+st_write( obj = listCenAll[["2021"]], dsn = conObesity , layer = 'da_interact_vic_2021', delete_layer = TRUE)
+st_write( obj = listCenAll[["2016"]], dsn = conObesity , layer = 'da_interact_vic_2016', delete_layer = TRUE)
+st_write( obj = listCenAll[["2011"]], dsn = conObesity , layer = 'da_interact_vic_2011', delete_layer = TRUE)
+
+### Vancouver -------------------------------------------------------------------------------------------------
+listCenAll <- list()
+listCenAll[["2021"]] <- van_2021 %>% funcCensusIndicator
+listCenAll[["2016"]] <- van_2016 %>% funcCensusIndicator
+listCenAll[["2011"]] <- van_2011  %>% funcCensusIndicator %>% select(-all_of(c(nameVec_age_15_64, nameVec_age_1_14)))
+saveRDS(listCenAll, paste("data/Van/listCen.rds", sep = ""))
+
+st_write( obj = listCenAll[["2021"]], dsn = conObesity , layer = 'da_interact_van_2021', delete_layer = TRUE)
+st_write( obj = listCenAll[["2016"]], dsn = conObesity , layer = 'da_interact_van_2016', delete_layer = TRUE)
+st_write( obj = listCenAll[["2011"]], dsn = conObesity , layer = 'da_interact_van_2011', delete_layer = TRUE)
+
+
+
+```
+
+
+Corr plots 
+```{r fig.width = 10}
+
+
+mtl_2021 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+mtl_2016 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+mtl_2011 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+
+
+vic_2021 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+vic_2011 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+vic_2016 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+
+
+
+van_2016 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+vic_2011 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+vic_2021 %>% 
+  funcCensusIndicator  %>% 
+  select(starts_with("i_")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot::corrplot.mixed(number.cex = 0.5, tl.cex = 0.5)
+
+
+
+```
+
+
+### Plot proportion maps for 2021 -  Scales vary across maps !-------------------------------------------
+```{r fig.width=8, fig.height=8}
+dfMapLong_mtl_2021 <- funcGetCensVector(mtl_2021, dfVarDesc)
+dfMapLong_vic_2021 <- funcGetCensVector(vic_2021, dfVarDesc)
+dfMapLong_van_2021 <- funcGetCensVector(van_2021, dfVarDesc)
+#dfMapLong_sk_2021 <- funcGetCensVector(sk_2021, dfVarDesc)
+
+dfMapLong_mtl_2016 <- funcGetCensVector(mtl_2016, dfVarDesc)
+dfMapLong_vic_2016 <- funcGetCensVector(vic_2016, dfVarDesc)
+dfMapLong_van_2016 <- funcGetCensVector(van_2016, dfVarDesc)
+#dfMapLong_sk_2016 <- funcGetCensVector(sk_2016, dfVarDesc)
+
+dfMapLong_mtl_2011 <- funcGetCensVector(mtl_2011, dfVarDesc)
+dfMapLong_vic_2011 <- funcGetCensVector(vic_2011, dfVarDesc)
+dfMapLong_van_2011 <- funcGetCensVector(van_2011, dfVarDesc)
+#dfMapLong_sk_2011 <- funcGetCensVector(sk_2011, dfVarDesc)
+
+
+# Generate plot with descriptive name 
+pList_mtl_2021 <- list()
+pList_vic_2021 <- list()
+pList_van_2021 <- list()
+#pList_sk_2021 <- list()
+
+for(i in dfVarDesc$Description){
+  pList_mtl_2021[[i]] <-  dfMapLong_mtl_2021 %>%
+    filter(Description == i) %>% 
+    ggplot() +
+    geom_sf(inherit.aes = FALSE, aes(fill = y), size =0.5, color= "black") + 
+    ggtitle(i) + 
+    theme(legend.position = "bottom") + 
+    theme(legend.text=element_text(size=9))
+  
+    pList_van_2021[[i]] <-  dfMapLong_van_2021 %>%
+    filter(Description == i) %>% 
+    ggplot() +
+    geom_sf(inherit.aes = FALSE, aes(fill = y), size =0.5, color= "black") + 
+    ggtitle(i) + 
+    theme(legend.position = "bottom") + 
+    theme(legend.text=element_text(size=9))
+    
+    pList_vic_2021[[i]] <-  dfMapLong_vic_2021 %>%
+    filter(Description == i) %>% 
+    ggplot() +
+    geom_sf(inherit.aes = FALSE, aes(fill = y), size =0.5, color= "black") + 
+    ggtitle(i) + 
+    theme(legend.position = "bottom") + 
+    theme(legend.text=element_text(size=9))
+    
+   # pList_sk_2021[[i]] <-  dfMapLong_sk_2021 %>%
+  #  filter(Description == i) %>% 
+   # ggplot() +
+    #geom_sf(inherit.aes = FALSE, aes(fill = y), size =0.5, color= "black") + 
+    #ggtitle(i) + 
+    #theme(legend.position = "bottom") + 
+    #theme(legend.text=element_text(size=9))
+}
+```
+
+# MOntreal 
+```{r}
+pList_mtl_2021
+```
+
+# Vancouver 
+```{r}
+pList_van_2021
+```
+
+# VIctoria  
+```{r}
+pList_vic_2021
+```
+
+# Sask 
+```{r}
+#pList_sk_2021
+```
+
+
+

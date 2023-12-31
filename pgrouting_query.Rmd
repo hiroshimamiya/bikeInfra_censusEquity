@@ -1,0 +1,236 @@
+---
+title: "Routing"
+author: "H"
+date: "2023-07-07"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide 
+---
+
+Codes below generate a graph from Stats Can road network file, find the closest vertex of the graph to the centroid of each area (e.g., CT, DA), find the closest street intersection to bike roads (edges), and calculate the shortest path from the areas to the intersections, for each census and road network years. 
+
+Requires postGIS and pgRouting. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Visualize distance 
+```{r, warning=FALSE, message=FALSE}
+library(rpostgis)
+library(RPostgreSQL)
+library(RPostgres)
+library(tidyverse)
+library(gridExtra)
+library(sf)
+# Plot global params 
+theme_set(theme_classic())
+theme_set(
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=11), 
+    plot.title = element_text(size=12),   
+    legend.text = element_text(size = 11),
+    legend.title = element_text(size = 11)
+  )
+)
+
+conObesity <- RPostgreSQL::dbConnect("PostgreSQL", host = "132.216.183.3",
+                                     dbname = "obesity", user = "hiroshi", 
+                                     password = Sys.getenv("DB3"))
+
+
+
+
+funcPlotDistance <- function(q, d, Crs, i, year, excludeSeg = NULL, useEuc = FALSE, graphing = TRUE, titleN = ""){
+  
+  intervention <- st_read(conObesity, layer =  c("hiroshi", i), geometry_column ="geom" ) %>% 
+    st_transform(crs = Crs) 
+  
+  if(year == 2011){
+    intervention <- intervention %>% filter(exist_2011==1)
+  }else if(year == 2016){
+    intervention <- intervention %>% filter(exist_2016==1)
+  }else if(year == 2021){
+    intervention <- intervention %>% filter(exist_2021==1)
+  }else{
+    stop("Year variable missing ")
+  } 
+    
+  routing <- dbGetQuery(conObesity, q)
+  
+  if(useEuc){
+    routing$network_distance <- ifelse(routing$network_distance < routing$euc_distance | is.na(routing$network_distance), routing$euc_distance, routing$network_distance) 
+  }
+  
+  
+  
+  da <- st_read(conObesity, 
+    layer=c("hiroshi", d), 
+    geometry_column ="geometry") %>% 
+    st_transform(crs = Crs) %>%
+    mutate(GeoUID = as.character(GeoUID)) %>% 
+    left_join(routing, by = c("GeoUID" = "gid_area"))
+  
+    # FOr Van, Stanley park is excluded 
+  da <- da %>% filter(GeoUID != 59153586)
+  
+  # Crop 
+  intervention <- intervention %>% st_intersection(da)
+  
+
+  
+  # Plot 
+  if(graphing == TRUE){
+    p1 <- ggplot() + 
+      geom_sf(data = da, aes(fill = network_distance)) + 
+      scale_fill_continuous(name = "Network distance \n in meter") +
+      geom_sf(data = intervention, color = "red") + 
+      ggtitle(titleN)
+    
+    p1 
+  }else {
+    return(da)
+  }
+}
+
+```
+
+### Some parks (non-residential areas) are not excluded in the maps below 
+## Vancouver, year 2011, 2016, and 2022   
+```{r, warning=FALSE, fig.width=13, fig.height=8}
+
+q <- "select * from hiroshi.routing_annual_van_2011"
+d <- "da_interact_van_2011"
+Crs <- 3153
+i <- "interact_intervention_annual_van"
+p1 <- funcPlotDistance(q,d,Crs,i, year = 2011, useEuc = TRUE, title = "A") 
+
+
+q <- "select * from hiroshi.routing_annual_van_2016"
+d <- "da_interact_van_2016"
+i <- "interact_intervention_annual_van"
+p2 <- funcPlotDistance(q,d,Crs,i,year = 2016, useEuc = TRUE, title = "B") 
+
+q <- "select * from hiroshi.routing_annual_van_2021"
+d <- "da_interact_van_2021"
+i <- "interact_intervention_annual_van"
+p3 <- funcPlotDistance(q,d,Crs,i, year = 2021, useEuc = TRUE, title = "C")
+
+
+grid.arrange(grobs = list(p1, p2, p3), ncol = 2) 
+
+
+
+```
+
+```{r, fig.width=5, fig.height=3, warning=FALSE}
+da <- funcPlotDistance(q,d,Crs,i, year = 2021, useEuc = TRUE, graphing = FALSE)
+hist(da$network_distance, main = "Histogram of distance from DA centroid \n to bike infrastructure, 2021", xlab = "Distance in meter")
+
+```
+
+## Montreal, year 2011, 2016, and 2022 
+DA centroids are population represenatative for Mtl 
+```{r, warning=FALSE, fig.width=13, fig.height=8}
+
+q <- "select * from hiroshi.routing_annual_mtl_2011"
+d <- "da_interact_mtl_2011"
+Crs <- 2959
+i <- "interact_intervention_annual_mtl"
+p1 <- funcPlotDistance(q,d,Crs,i, year = 2011, useEuc = TRUE, title = "A") 
+
+
+q <- "select * from hiroshi.routing_annual_mtl_2016"
+d <- "da_interact_mtl_2016"
+i <- "interact_intervention_annual_mtl"
+p2 <- funcPlotDistance(q,d,Crs,i,year = 2016, useEuc = TRUE, title = "B")
+
+q <- "select * from hiroshi.routing_annual_mtl_2021"
+d <- "da_interact_mtl_2021"
+i <- "interact_intervention_annual_mtl"
+p3 <- funcPlotDistance(q,d,Crs,i, year = 2021, useEuc = TRUE, title = "C")
+
+
+grid.arrange(grobs = list(p1, p2, p3), ncol = 2)
+
+ggsave("result/mtl_distance.png")
+```
+
+```{r, fig.width=5, fig.height=3, warning=FALSE}
+da <- funcPlotDistance(q,d,Crs,i, year = 2021, useEuc = TRUE, graphing = FALSE)
+hist((da$network_distance), main = "Histogram of distance from DA centroid \n to bike infrastructure, 2021", xlab = "Distance in meter")
+
+```
+
+
+## Victoria, year 2011, 2016, and 2022    
+Many small segments were removed manually, but not all. 
+```{r, warning=FALSE, fig.width=13, fig.height=8}
+
+q <- "select * from hiroshi.routing_annual_vic_2011"
+d <- "da_interact_vic_2011"
+Crs <- 3153
+i <- "interact_intervention_annual_vic"
+p1 <- funcPlotDistance(q,d,Crs,i, year = 2011, useEuc = TRUE, title = "A" )
+
+
+q <- "select * from hiroshi.routing_annual_vic_2016"
+d <- "da_interact_vic_2016"
+i <- "interact_intervention_annual_vic"
+p2 <- funcPlotDistance(q,d,Crs,i,year = 2016, useEuc = TRUE, title = "B")
+
+
+#q <- "select * from hiroshi.routing_annual_vic_2016_noImputation"
+#d <- "da_interact_vic_2016"
+#i <- "interact_intervention_annual_vic"
+#funcPlotDistance(q,d,Crs,i,year = 2016, useEuc = TRUE)
+
+
+q <- "select * from hiroshi.routing_annual_vic_2021"
+d <- "da_interact_vic_2021"
+i <- "interact_intervention_annual_vic"
+p3 <- funcPlotDistance(q,d,Crs,i, year = 2021, useEuc = TRUE, title = "C")
+
+grid.arrange(grobs = list(p1, p2, p3), ncol = 2)
+
+ggsave("result/Vic_distance.png")
+```
+
+```{r, fig.width=5, fig.height=3, warning=FALSE}
+hist((da$network_distance), main = "Histogram of distance from DA centroid \n  to bike infrastructure, 2021", xlab = "Distance in meter")
+
+```
+
+
+```{r, warning=FALSE}
+# Script to investigate unrouted DA 
+#intervention <- st_read(conObesity, layer =  c("hiroshi", "interact_intervention_annual_vic"), geometry_column ="geom" ) %>% st_transform(crs = 3153) 
+#q <- "select * from hiroshi.routing_annual_vic_2016_noImputation"
+#routing <- dbGetQuery(conObesity, q)
+
+#da <- st_read(conObesity, 
+#    layer=c("hiroshi", "da_interact_vic_2016"), 
+#    geometry_column ="geometry") %>% 
+#    st_transform(crs = 3153) %>%
+#    left_join(routing, by = c("GeoUID" = "gid_area")) %>%
+#  mutate(netDistFailed = ifelse(network_distance < euc_distance, 1,0)) %>% 
+#  mutate(network_euc_distance = ifelse(network_distance < euc_distance | is.na(network_distance), euc_distance, network_distance) )
+  
+#ggplot() + 
+#    geom_sf(data = da, aes(fill = network_distance)) + 
+#    scale_fill_continuous() +
+#    geom_sf(data = intervention, color = "red")
+
+#ggplot() + 
+#    geom_sf(data = da, aes(fill = factor(netDistFailed))) + 
+#    geom_sf(data = intervention, color = "red")
+
+#st_write( obj = da, dsn = conObesity , layer = 'da_interact_mtl_2016_testinvalidrouting', delete_layer = TRUE)
+
+```

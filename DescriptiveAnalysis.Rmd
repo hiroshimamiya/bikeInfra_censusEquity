@@ -1,0 +1,364 @@
+---
+title: "intervention_analysis: Exploration of infrastrucure data by Year"
+author: "H"
+date: "2023-03-26"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+
+# Libraries
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(rgdal)
+library(tidyverse)
+library(cancensus)
+library(ggmap)
+library(stringr)
+library(kableExtra)
+library(htmlTable)
+library(ggsankey)
+library(grid)
+library(gridExtra)
+library(magrittr)
+
+rm(list=ls())
+
+# Varlist for census 
+source("function/varList.R")
+
+# Canceuss 
+options(cancensus.cache_path = "cache/")
+#set_cancensus_cache_path("cache/", install = TRUE)
+
+bool_loadCensus = FALSE
+
+
+# Plot global params 
+theme_set(theme_classic())
+theme_set(
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+)
+
+conObesity <- RPostgreSQL::dbConnect("PostgreSQL", host = "132.216.183.3",
+  dbname = "obesity", user = "hiroshi", 
+  password = Sys.getenv("DB3"))
+
+```
+
+### Load census and Dissemination area data - year 2021, from the CanCensus R library 
+```{r, message=FALSE}
+
+if(bool_loadCensus){
+  listCen <- list()
+  
+  listCen[["Van"]] <- get_census(dataset='CA21', regions=list(CSD="5915022"),
+  vectors=censusVarList, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY"))
+  
+  listCen[["Vic"]] <- get_census(dataset='CA21', regions=list(CSD="5917034"), vectors=censusVarList, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+  api_key = Sys.getenv("CM_API_KEY"))
+  
+  # no need to run below anymore
+  listCen[["Mtl"]] <- funcGetCenMontreal("CA21", censusVarList)
+
+  saveRDS(listCen, "data/listCen_demo_2021.rds")
+}else{
+  listCen <- readRDS("data/listCen_demo_2021.rds")
+}
+
+
+```
+
+Load intervention data, from Udit and Benoit 
+THere are two maps for Mtl, based on two data sources
+```{r, message=FALSE, warning=FALSE}
+intList <- list() 
+
+# Load latgest data, Sep 2023 
+intList[["Vic"]] <- st_read("data/intervention_rawData/shp/updated_Sep2023/for_hiroshi/for_hiroshi/vic_bikelanes.shp") %>% st_transform(crs = 3005)
+
+intList[["Van"]] <- st_read("data/intervention_rawData/shp/updated_Sep2023/for_hiroshi/for_hiroshi/van_bikelanes.shp") %>%st_transform(crs = 3153)
+
+intList[["Mtl"]] <- st_read("data/intervention_rawData/shp/updated_Sep2023/mtl_bikelanes_no_mjr-road/mtl_bikelanes_no_mjr-road.shp") %>% st_transform(crs = 2959)
+
+intList[["Mtl_other"]] <- st_read("data/intervention_rawData/shp/updated_Sep2023/mtl_bikelanes_no_mjr-road_other/mtl_bikelanes_no_mjr-road_other.shp") %>% st_transform(crs = 2959)
+
+
+```
+
+
+
+
+
+
+Load GTFS files for metro and bus stops 
+```{r}
+stops <- read.csv("data/GTFS_MTL/stops.txt")
+metro_Mtl <- st_as_sf(stops, coords = c("stop_lon", "stop_lat"), crs = 4326) 
+metro_Mtl <- metro_Mtl %>%  filter(location_type ==1) %>% st_transform(2959)
+
+metro_Van <- read_sf("data/VAN_rapid-transit-stations/rapid-transit-stations.shp") %>% st_transform(3153)
+```
+
+ Data preperation - categorical varaibles for road types  
+```{r, message=FALSE}
+
+# New lane type 
+intList[["Vic"]]$class_b <- factor(intList[["Vic"]]$facilities)
+intList[["Mtl"]]$class_b <- factor(intList[["Mtl"]]$TypeVoie)
+intList[["Mtl_other"]]$class_b <- factor(intList[["Mtl_other"]]$TypeVoie)
+intList[["Van"]]$class_b <- factor(intList[["Van"]]$grnwy_n)
+
+# Year name for Van 
+intList[["Van"]]$yr <- intList[["Van"]]$year
+
+
+l <- intList[["Vic"]] %>% st_length()/1000
+intList[["Vic"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(class_b) %>%  
+  st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+
+
+l <- intList[["Van"]] %>% st_length() %>%  st_drop_geometry()
+intList[["Van"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(class_b) %>%  
+    st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+
+
+l <- intList[["Mtl"]] %>% st_length()
+intList[["Mtl"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(class_b) %>%  
+    st_drop_geometry() %>% 
+  summarise(length = sum(roadLen))  
+
+
+l <- intList[["Mtl_other"]] %>% st_length()
+intList[["Mtl_other"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(class_b) %>%  
+    st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+
+```
+
+## Growth by year
+#### Vic
+```{r}
+l <- intList[["Vic"]] %>% st_length()/1000
+intList[["Vic"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(yr) %>%  
+  st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+```
+#### Vancouver without stanley park
+```{r}
+map_noPark <- (listCen[["Van"]]) %>% filter(GeoUID != 59153586) %>% st_transform(3153)
+intList[["Van"]] <- intList[["Van"]] %>% st_intersection(map_noPark)
+
+l <- intList[["Van"]] %>% 
+  st_length()/1000 %>%  
+  st_drop_geometry()
+
+intList[["Van"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(yr) %>%  
+    st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+```
+#### Mtl, two versions of definitions from Benoit
+```{r}
+l <- intList[["Mtl"]] %>% st_length()/1000
+intList[["Mtl"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(yr) %>%  
+    st_drop_geometry() %>% 
+  summarise(length = sum(roadLen))  
+
+
+l <- intList[["Mtl_other"]] %>% st_length()/1000
+intList[["Mtl_other"]] %>%
+  mutate(roadLen = l) %>%  
+  group_by(yr) %>%   
+  st_drop_geometry() %>% 
+  summarise(length = sum(roadLen)) 
+
+```
+
+
+
+
+### New data format, separate year layer to exsit_ format 
+```{r} 
+
+
+
+# Indicators for the existence of segment for each yr 
+intList[["Vic"]] %<>%  
+  mutate(exist_2011 = case_when(yr=="2011" ~ 1, TRUE ~ 0),
+    exist_2016 = case_when(yr=="2016" ~ 1, TRUE ~ 0),
+    exist_2021 = case_when(yr=="2021" ~ 1, TRUE ~ 0)) 
+
+
+intList[["Van"]] %<>%  
+  mutate(
+    exist_2001 = case_when(yr=="2001" ~ 1, TRUE ~ 0),
+    exist_2006 = case_when(yr=="2006" ~ 1, TRUE ~ 0),
+    exist_2011 = case_when(yr=="2011" ~ 1, TRUE ~ 0),
+    exist_2016 = case_when(yr=="2016" ~ 1, TRUE ~ 0),
+    exist_2021 = case_when(yr=="2021" ~ 1, TRUE ~ 0)) 
+
+
+intList[["Mtl"]] %<>%  
+  mutate(
+    exist_2001 = case_when(yr=="2001" ~ 1, TRUE ~ 0),
+    exist_2006 = case_when(yr=="2006" ~ 1, TRUE ~ 0),
+    exist_2011 = case_when(yr=="2011" ~ 1, TRUE ~ 0),
+    exist_2016 = case_when(yr=="2016" ~ 1, TRUE ~ 0),
+    exist_2021 = case_when(yr=="2022" ~ 1, TRUE ~ 0)) 
+
+
+intList[["Mtl_other"]] %<>%  
+  mutate(
+    exist_2001 = case_when(yr=="2001" ~ 1, TRUE ~ 0),
+    exist_2006 = case_when(yr=="2006" ~ 1, TRUE ~ 0),
+    exist_2011 = case_when(yr=="2011" ~ 1, TRUE ~ 0),
+    exist_2016 = case_when(yr=="2016" ~ 1, TRUE ~ 0),
+    exist_2021 = case_when(yr=="2022" ~ 1, TRUE ~ 0)) 
+
+
+
+intList[["Mtl"]]  %>%  group_by(class_b) %>% summarise(numSegments = n())
+intList[["Mtl_other"]]  %>%  group_by(class_b) %>% summarise(numSegments = n())
+
+
+```
+
+
+
+#### Map of interventions 
+```{r}
+
+
+ggplot() + 
+    geom_sf(data = intList[["Mtl"]] %>% filter(yr == 2022), aes(color = "Added in 2022")) + 
+    geom_sf(data = intList[["Mtl"]] %>% filter(yr == 2016), aes(color = "Added in 2016")) + 
+    geom_sf(data = intList[["Mtl"]] %>% filter(yr == 2011),  aes(color = "Existed in 2011")) +
+    geom_sf(data = metro_Mtl, aes(color = "Metro")) +
+  scale_color_manual(values = c("Added in 2022" = "blue", 
+                                "Added in 2016" = "green",
+                                "Existed in 2011" = "grey", 
+                                "Metro" = "red"), 
+                     name = "Year road cumulatively existed") 
+
+
+ggplot() + 
+    geom_sf(data = intList[["Mtl_other"]] %>% filter(yr == 2022), aes(color = "Added in 2022")) + 
+    geom_sf(data = intList[["Mtl_other"]] %>% filter(yr == 2016), aes(color = "Added in 2016")) + 
+    geom_sf(data = intList[["Mtl_other"]] %>% filter(yr == 2011),  aes(color = "Existed in 2011")) +
+  scale_color_manual(values = c("Added in 2022" = "blue", 
+                                "Added in 2016" = "green",
+                                "Existed in 2011" = "grey" ), 
+                     name = "Year road cumulatively existed") 
+
+
+
+ggplot() + 
+    geom_sf(data = intList[["Van"]] %>% filter(yr == 2021), aes(color = "Added in 2021")) + 
+    geom_sf(data = intList[["Van"]] %>% filter(yr == 2016), aes(color = "Added in 2016")) + 
+    geom_sf(data = intList[["Van"]] %>% filter(yr == 2011),  aes(color = "Existed in 2011")) +
+    geom_sf(data = metro_Van, aes(color = "Station")) +
+    scale_color_manual(values = c("Added in 2021" = "blue", 
+                                "Added in 2016" = "green",
+                                "Existed in 2011" = "grey",
+                                "Station" = "red"), 
+                     name = "Year road cumulatively existed") 
+
+
+ggplot() + 
+    geom_sf(data = intList[["Vic"]] %>% filter(yr == 2021), aes(color = "Added in 2022")) + 
+    geom_sf(data = intList[["Vic"]] %>% filter(yr == 2016), aes(color = "Added in 2016")) + 
+    geom_sf(data = intList[["Vic"]] %>% filter(yr == 2011),  aes(color = "Existed in 2011")) +
+  scale_color_manual(values = c("Added in 2022" = "blue", 
+                                "Added in 2016" = "green",
+                                "Existed in 2011" = "grey" ), 
+                     name = "Year road cumulatively existed") + 
+  ggtitle("most of small segments will be removed (did not exist in photo image)")
+
+
+
+
+
+```
+
+
+
+
+ 
+ 
+ 
+
+
+
+```{r}
+#### Finally, save the intervention data for the main analysis 
+funcSaveGeom <- function(l){
+  l$unique_id <- seq(1:nrow(l))
+  l %<>% rename(geom = geometry)
+}
+
+intList <- lapply(intList, funcSaveGeom)
+  
+saveRDS(intList, "data/interventionList_annualLayer.rds")
+
+st_write( obj = intList[["Van"]],  dsn = conObesity , layer = 'interact_intervention_annual_van', delete_layer = TRUE)
+
+st_write( obj = intList[["Mtl"]], dsn = conObesity , layer = 'interact_intervention_annual_mtl', delete_layer = TRUE)
+
+st_write( obj = intList[["Mtl_other"]], dsn = conObesity , layer = 'interact_intervention_annual_mtl_other', delete_layer = TRUE)
+
+
+# Vic bike infras, removing short segments that did not exist phsyically
+rd_2016 <- intList[["Vic"]] %>% filter(exist_2016 ==1 & !(unique_id %in% c(78,89,97,99,101,146,159)))
+rd_2021 <- intList[["Vic"]] %>% filter(exist_2021 ==1 & !(unique_id %in% c(202,177,189,200,205,209,259,274)))
+ggplot() + 
+    geom_sf(data = intList[["Vic"]] %>% filter(exist_2016 ==1), linewidth=2,  color = "red", alpha = 0.9)  +
+    geom_sf(data = rd_2016, linewidth=2,  color = "blue", alpha = 0.9)  
+ggplot() + 
+    geom_sf(data = intList[["Vic"]] %>% filter(exist_2021 ==1), linewidth=2,  color = "red", alpha = 0.9)  +
+    geom_sf(data = rd_2021, linewidth=2,  color = "blue", alpha = 0.9)  
+  
+
+dim(intList[["Vic"]])
+intList_trimmed <- intList[["Vic"]] %>% 
+ filter(!(unique_id %in% c(78,89,97,99,101,146,159, 202,177,189,200,205,209,259,274)))
+intList_trimmed
+
+st_write( obj = intList_trimmed, dsn = conObesity , layer = 'interact_intervention_annual_vic', delete_layer = TRUE)
+st_write( obj = intList[["Vic"]], dsn = conObesity , layer = 'interact_intervention_annual_vic_notTrimmed', delete_layer = TRUE)
+
+
+
+# Save transit access 
+st_write( obj = metro_Mtl, dsn = conObesity , layer = 'interact_metro_mtl', delete_layer = TRUE)
+st_write( obj = metro_Van, dsn = conObesity , layer = 'interact_metro_van', delete_layer = TRUE)
+
+
+```

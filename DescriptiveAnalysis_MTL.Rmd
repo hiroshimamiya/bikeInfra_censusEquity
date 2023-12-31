@@ -1,0 +1,555 @@
+---
+title: "intervention_analysis: Montreal"
+author: "H"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide 
+---
+
+```{r setup, include=FALSE}
+
+# Libraries
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(rgdal)
+library(tidyverse)
+library(cancensus)
+library(ggmap)
+library(stringr)
+library(kableExtra)
+library(htmlTable)
+library(ggsankey)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(keyring)
+library(RPostgreSQL)
+library(rpostgis)
+library(magrittr)
+
+rm(list=ls())
+
+# Varlist for census 
+source("function/varList.R")
+
+# Canceuss 
+options(cancensus.cache_path = "cache/")
+#set_cancensus_cache_path("cache/", install = TRUE)
+
+bool_loadCensus = FALSE
+
+# FUnctions for data preperation 
+source("function/dataPrep.R")
+
+# Description of census variables 
+dfVarDesc <- readRDS("~/projects/intervention_sdoh/data/varDescription.rds")
+
+
+# Plot global params 
+theme_set(theme_classic())
+theme_set(
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    rect = element_blank(), 
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+)
+
+fileLoc <- "data/Mtl"
+targetCMA <- "Mtl"
+targetCMA2 <- "Mtl_other"
+resultLoc <- "result/Mtl"
+
+
+conObesity <- RPostgreSQL::dbConnect("PostgreSQL", host = "132.216.183.3",
+  dbname = "obesity", user = "hiroshi", 
+  password = Sys.getenv("DB3"))
+
+
+```
+
+
+
+
+#### Task, descriptive analysis    
+-	Map of Dissemination Areas (DAs) showing exposures to the interventions by census years
+, where exposure is a simple
+binary metric - touching the intervention or not.    
+-	Non-spatial plots showing association between each of the social determinant of health measures (ses) and the interventions, for 2011, 2016, 2021.    
+
+ Census years in 3 CMAs    
+   - Montreal: 2016 and 2011 (2021 bike road data are pending)   
+   - Vancouver: 2011, 2016, and 2021    
+   - Victoria: 2011, 2016, and 2021   
+
+
+
+
+Load interventions and census and Dissemination area data - year 2021, from the CanCensus R library 
+```{r, message=FALSE}
+# Intervention file for each city 
+intList <- readRDS("data/interventionList_annualLayer.rds")
+intervention <- intList[[targetCMA]]
+intervention2 <- intList[[targetCMA2]]
+rm(intList)
+
+listCenAll <- readRDS(paste(fileLoc,"/listCen.rds", sep = ""))
+
+```
+
+
+Codes to get intersection of area and road, identify areas overlapping with road, and make categorical variables indicating year status of intervention 
+```{r}
+
+# load intersection btwn area and bike infra. Each year file represent different DA year 
+dfIntersect_annual_2011 <- st_read(conObesity, layer =  c("hiroshi", "dfintersect_annual_2011"), geometry_column ="overlapgeom_20")
+dfIntersect_annual_2016 <- st_read(conObesity, layer =  c("hiroshi", "dfintersect_annual_2016"), geometry_column ="overlapgeom_20")
+dfIntersect_annual_2021 <- st_read(conObesity, layer =  c("hiroshi", "dfintersect_annual_2021"), geometry_column ="overlapgeom_20")
+
+
+library(magrittr)
+dfIntersect_annual_2021 %<>% mutate(GeoUID = as.numeric(GeoUID))
+dfIntersect_annual_2016 %<>% mutate(GeoUID = as.numeric(GeoUID))
+dfIntersect_annual_2011 %<>% mutate(GeoUID = as.numeric(GeoUID))
+
+
+# Merge DA and intervention segments 
+merged_2021 <- funcMergeData(dfIntersect_annual_2021, listCenAll[["2021"]], intervention)
+merged_2016 <- funcMergeData(dfIntersect_annual_2016, listCenAll[["2016"]], intervention)
+merged_2011 <- funcMergeData(dfIntersect_annual_2011, listCenAll[["2011"]], intervention)
+
+#ggplot(merged_2011) +geom_sf(aes(fill= exist_category))
+#ggplot(merged_2016) +geom_sf(aes(fill= exist_category))
+#ggplot(merged_2021) +geom_sf(aes(fill= exist_category))
+
+# Create year categories - these are incidence measure (catregorical var indicating areas with newly introduced areas)
+merged_2021 %<>% funcCategoryYear()  
+merged_2016 %<>% funcCategoryYear()  
+merged_2011 %<>% funcCategoryYear()  
+
+# Create year categories - these are prevalent (cumulative) measure 
+merged_2021 %<>% funcPrevelanceYear()  
+merged_2016 %<>% funcPrevelanceYear()
+merged_2011 %<>% funcPrevelanceYear()
+
+
+
+# Factor Level
+merged_2021$exist_category <- factor(merged_2021$exist_category)
+merged_2016$exist_category <- factor(merged_2016$exist_category)
+merged_2011$exist_category <- factor(merged_2011$exist_category)
+
+levels(merged_2021$exist_category) <- c("2011", "2016", "2021", "Never")
+levels(merged_2016$exist_category) <- c("2011", "2016", "2021", "Never")
+levels(merged_2011$exist_category) <- c("2011", "2016", "2021", "Never")
+
+```
+
+
+
+
+```{r}
+#merged_2011 %>% group_by(exist_2011, exist_2016, exist_2021, exist_category, prevalent_2011, prevalent_2016, prevalent_2021) %>%  summarise(n = n())
+#merged_2016 %>% group_by(exist_2011, exist_2016, exist_2021, exist_category, prevalent_2011, prevalent_2016, prevalent_2021) %>%  summarise(n = n())
+#merged_2021 %>% group_by(exist_2011, exist_2016, exist_2021, exist_category, prevalent_2011, prevalent_2016, prevalent_2021) %>%  summarise(n = n())
+
+# merge annual data - need to standardize column names 
+merged_2021$name <- NULL
+merged_2011$`NHS Non-Return Rate` <- NULL
+merged_2011$`NHS Non Return Rate` <- NULL
+merged_2016$`Quality Flags` <- NULL
+merged_2021$`Quality Flags` <- NULL
+merged_2011$`Quality Flags` <- NULL
+
+
+# data frame for each census year, the new "prevalent" variable is cumulative, shows existing infra in each year
+# The year variable only indicate census year, not the year infra was inplemented in
+merged_year <- rbind( 
+  merged_2021 %>% 
+    #select(exist_category, starts_with("i_"), starts_with("prevalent_")) %>% 
+    mutate(prevalent = ifelse(prevalent_2021 == 0,0,1), yearPrevalent = "2021"),
+  merged_2016 %>% 
+    #select(exist_category, starts_with("i_"), starts_with("prevalent_")) %>% 
+    mutate(prevalent = ifelse(prevalent_2016 == 0,0,1), yearPrevalent = "2016"),
+  merged_2011 %>% 
+    #select(exist_category, starts_with("i_"), starts_with("prevalent_")) %>% 
+    mutate(prevalent = ifelse(prevalent_2011 == 0,0,1), yearPrevalent = "2011")
+)
+
+
+merged_year$prevalent <- factor(merged_year$prevalent) 
+levels(merged_year$prevalent) <- c("NoInfra", "WithInfra")
+
+
+# Show aggregated values 
+merged_year %>% 
+  group_by(exist_2011, exist_2016, exist_2021, exist_category, prevalent_2011, prevalent_2016, prevalent_2021, yearPrevalent, prevalent) %>%  
+  summarise(n = n()) %>% 
+  arrange(yearPrevalent, prevalent, exist_category) %>% 
+  print(n = 100) 
+
+# Make it long format   
+merged_year_long <- merged_year %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(starts_with("i_"), yearPrevalent, prevalent) %>% 
+  pivot_longer(
+    cols = starts_with("i_"),
+    names_to = "CensusVars",
+    values_to = "values") 
+
+
+# add 
+merged_year_long %<>% 
+  left_join(dfVarDesc, by = c("CensusVars"="varName"))
+
+
+
+
+# Linestring intervention data, aggregated by year of implementation 
+# it is possible to aggregate by year, since these layers are based on the DA definition of 2021, even bike infra in 2011 and 2016
+intervention_agg_2021 <-  dfIntersect_annual_2021 %>% 
+  group_by(GeoUID) %>%  
+  summarise(exist_2011 = sum(exist_2011),
+            exist_2016 = sum(exist_2016), 
+            exist_2021 = sum(exist_2021)
+            )
+
+
+
+
+plotFunc <- function(x){
+   return(c(y = mean(x), label = length(x)))
+}
+
+
+```
+
+### Map of intervention by year, based on 2021 DAs
+```{r, fig.height=5, fig.width=8}
+# New incidence measures 
+road_new2021 <- intervention_agg_2021 %>% filter(exist_2016==0 & exist_2011 ==0 & exist_2021 > 0)
+road_new2016 <- intervention_agg_2021 %>% filter(exist_2016 > 0 & exist_2011 ==0 ) 
+road_new2011 <- intervention_agg_2021 %>% filter(exist_2011 > 0 ) 
+
+library(ggspatial)
+p <- ggplot() + 
+  geom_sf(data = merged_2021, size =1, color= "grey70", fill = "white") + 
+  geom_sf(data = intervention_agg_2021, aes(color = "Existed in 2011"), lwd= 0.6, alpha = 0.5, show.legend = "line") +
+  geom_sf(data = road_new2016, aes(color = "Newly added in 2016"), lwd= 1,alpha = 1.5, show.legend = "line") +
+  geom_sf(data = road_new2021, aes(color = "Newly added in 2021"), lwd= 1,alpha = 1.5, show.legend = "line") +
+  scale_color_manual(values = c("Existed in 2011" = "black", 
+                                "Newly added in 2016" = "blue", 
+                                "Newly added in 2021" = "red"), 
+                     name = "Cycling infrastructure") +
+  annotation_scale(text_cex = 1.3) + 
+  theme(legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14))
+
+p
+
+saveRDS(p, paste(resultLoc, "/cumulativeBikeInfra.rds", sep = ""))
+ggsave(plot = p, paste(resultLoc, "/cumulativeBikeInfra.png", sep = ""))
+
+```
+
+### Table by year, cumulative measure bike road implementation, based on 2021 DAs  
+```{r, warning=FALSE}
+merged_2021  %>% 
+  st_drop_geometry() %>% 
+  #group_by(exist_category, exist_2011, exist_2016, exist_2021) %>%
+  group_by(exist_category, exist_2011, exist_2016, exist_2021) %>%
+  summarise(DAcount = n(), .groups = "drop") 
+
+```
+
+
+
+### Areas touching with bike roads, by census year  
+```{r, message=FALSE, warning=FALSE, echo = FALSE, fig.width= 10, fig.height= 10}
+# First, map Plot overlap of DA with bike roads 
+merged_2021$exist_category <- factor(merged_2021$exist_category, levels = c("Never", "2011", "2016", "2021"))
+ggplot() + 
+  #geom_sf(data = intervention_agg_2016, color = "blue", lwd= 1, inherit.aes = FALSE) +
+  geom_sf(data = merged_2021, aes(fill = exist_category), inherit.aes = FALSE, size =1, alpha = 0.75, color= "grey") + 
+  scale_fill_manual(values = c( "white", "orange", "blue", "red" ), 
+                    labels = c("Never", "been around in 2011", "Added in 2016", "Added in 2021"), 
+                    name = "Overlap of bike roads \n and dissemination areas, \n based on 2021 boundaries of  dissemination areas \n 20m buffer around DA boundaries")
+
+
+```
+
+### Variables of interest (all proportion measures) are:
+ - Visible minority   
+ - Aboriginal   
+ - Secondary(high school) degree as the highest education attained, among those >15 yrs old.   
+ - Secondary(high school) degree as the highest education attained, among those >25 yrs old   
+ - Moved past 5 years    
+ - LICO    
+ - Recent immigrants    
+ - Owner and tenant spending >30% of income for housing    
+ - Renting (tenants)    
+  - Age below 15 yrs old
+ - Age 65 yrs old    
+
+
+
+*Scale is fixed in all plot below.* 
+SES indicators, Areas newly  received intervention in 2021, 2016, and 2011 v.s areas never underwent change, based on the 2021 census.
+SES of "NEVER" is based on 2021 
+`Census year: 2021`
+ 
+```{r box plot, fig.height = 19, fig.width = 4}
+
+
+colorH = c("red", "white")
+merged_year_long %>%
+  mutate(prevalent = factor(prevalent)) %>% 
+  st_drop_geometry() %>% 
+  ggplot( aes(x=yearPrevalent, y = values, aes(fill = prevalent))) +
+  geom_boxplot(aes(fill = prevalent), position=position_dodge(.7)) + 
+  theme_classic() + 
+  ylab("proportion") + 
+  scale_fill_manual(values=colorH) + 
+  stat_summary(fun.y=mean, geom="point", 
+               aes(group=prevalent), 
+               position=position_dodge(.9), 
+               color="blue", 
+               size=2, 
+               fun.data = plotFunc
+               ) +
+  facet_wrap(~ shortDesc, ncol = 1, scales="free") 
+
+  #geom_text(data=merged_year_long %>% 
+  #            group_by(prevalent) %>% 
+  #            summarise(top = max(values, na.rm = TRUE), n=n()),
+  #           aes(x=year, y=top, label= paste0("n = ", n)), nudge_y=1)
+
+
+```
+
+
+
+Newwork distance, prepeare quintile measurees 
+```{r}
+# function to make quintile 
+funcQuantile <- function(x, q = 3) {
+    #quantile <- cut(x, breaks = quantile(x, probs = 0:q/q, na.rm = TRUE), include.lowest = TRUE, labels = 1:q)
+    quantile <- cut(x, breaks = quantile(x, probs = 0:q/q, na.rm = TRUE), include.lowest = TRUE, labels = FALSE)
+    #quantile <- cut(x, breaks = q, labels = FALSE)
+    quantile
+}
+
+
+funcMedianSplit <- function(x){
+  med <- median(unique(x), na.rm = T)
+  xQ <- NA
+  xQ[x > med] <- 2
+  xQ[x < med] <- 1   
+  return(xQ)
+}
+
+
+# Network 
+dfNetwork <- 
+  rbind(
+    merged_year %>%  
+    dplyr::select(exist_category, starts_with("i_"), GeoUID, yearPrevalent, prevalent) %>% 
+    filter(yearPrevalent == "2011") %>%  
+    mutate(across(starts_with("i_") & !c(i_aboriginal, i_rec_imm, i_educ_noHS_25_64), ~ funcQuantile(.x, q=3), .names = "Q_{.col}")) %>% 
+    mutate(Q_i_aboriginal = funcMedianSplit(i_aboriginal)) %>%  
+    mutate(Q_i_educ_noHS_25_64 = funcMedianSplit(i_educ_noHS_25_64)) %>%  
+    mutate(Q_i_rec_imm = funcMedianSplit(i_rec_imm)),  
+    
+    merged_year %>%  
+    dplyr::select(exist_category, starts_with("i_"), GeoUID, yearPrevalent, prevalent) %>% 
+    filter(yearPrevalent == "2016") %>% 
+    mutate(across(starts_with("i_") & !c(i_aboriginal, i_rec_imm, i_educ_noHS_25_64), ~ funcQuantile(.x, q=3), .names = "Q_{.col}")) %>% 
+    mutate(Q_i_aboriginal = funcMedianSplit(i_aboriginal)) %>%  
+    mutate(Q_i_educ_noHS_25_64 = funcMedianSplit(i_educ_noHS_25_64)) %>%  
+    mutate(Q_i_rec_imm = funcMedianSplit(i_rec_imm)),  
+    
+    merged_year %>%  
+    dplyr::select(exist_category, starts_with("i_"), GeoUID, yearPrevalent, prevalent) %>% 
+    filter(yearPrevalent == "2021") %>% 
+    mutate(across(starts_with("i_") & !c(i_aboriginal, i_rec_imm, i_educ_noHS_25_64), ~ funcQuantile(.x, q=3), .names = "Q_{.col}")) %>% 
+    mutate(Q_i_aboriginal = funcMedianSplit(i_aboriginal)) %>%  
+    mutate(Q_i_educ_noHS_25_64 = funcMedianSplit(i_educ_noHS_25_64)) %>%  
+    mutate(Q_i_rec_imm = funcMedianSplit(i_rec_imm))
+  )
+
+
+# rename 
+dfNetwork <- rename_with(dfNetwork, ~ gsub("i_", "", .x, fixed = TRUE))
+dfNetwork <- rename_with(dfNetwork, ~ gsub("Q_", "i_", .x, fixed = TRUE))
+
+
+
+# download network data 
+road <- bind_rows(
+  dbGetQuery(conObesity, "Select * from hiroshi.routing_annual_mtl_2011") %>% mutate(yearRouting ="2011"),
+  dbGetQuery(conObesity, "Select * from hiroshi.routing_annual_mtl_2016") %>% mutate(yearRouting ="2016"),
+  dbGetQuery(conObesity, "Select * from hiroshi.routing_annual_mtl_2021") %>% mutate(yearRouting ="2021")
+)
+
+road <- road %>%  
+  mutate(network_distance = ifelse(network_distance < euc_distance | is.na(network_distance), euc_distance, network_distance))
+
+
+
+
+
+# combine areal census and network distance 
+road %<>% mutate(gid_area = as.numeric(gid_area))
+dfNetwork <- 
+  dfNetwork %>%
+  left_join(road, by=c("yearPrevalent" = "yearRouting", "GeoUID" ="gid_area"))
+
+
+# Combine with covariates - pop density and dist to metro 
+dfNetwork <- dfNetwork %>% 
+  left_join(merged_year %>% dplyr::select(min, popDensity_per1000, exist_category, yearPrevalent, GeoUID) %>% st_drop_geometry(), 
+            by = c("exist_category" = "exist_category", "GeoUID" = "GeoUID", "yearPrevalent" = "yearPrevalent")
+      )
+
+#dfNetwork %>% 
+#  filter(yearPrevalent=="2021") %>% 
+#  ggplot() +
+#  geom_sf(aes(fill = network_distance))
+
+```
+
+
+
+
+```{r}
+# Make it to long data for plotting
+dfNetworkLong <- dfNetwork %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(-exist_category) %>%  
+  pivot_longer(cols = starts_with("i_"), names_to = "x",values_to = "Q") %>% 
+  left_join(dfVarDesc, by = c("x"="varName")) 
+```
+
+
+
+Distance based on network between the vertex closest to areal centroid and vertex closest to bike infrastructure at every 50meter.   
+In short, the table just indicates that the mean distance between the centroid and bike road is closer among areas touching bike road, obviously.
+```{r}
+dfNetwork %>%  
+  st_drop_geometry() %>% 
+  group_by(yearPrevalent, prevalent) %>% 
+  summarize(median_network_distance = median(network_distance, na.rm = TRUE),
+    median_euclidian_distance = median(euc_distance, na.rm = TRUE)) %>% 
+  mutate(Label = c("not touching intervention", "touching intervention"))
+
+```
+Descriptive table in the analysis 
+```{r}
+dfNetwork %>%  
+  st_drop_geometry() %>% 
+  group_by(yearPrevalent, prevalent) %>% 
+  summarize(median_network_distance = median(network_distance, na.rm = TRUE),
+    median_euclidian_distance = median(euc_distance, na.rm = TRUE)) %>% 
+  mutate(Label = c("not touching intervention", "touching intervention"))
+
+
+
+
+modelCol <-c("network_distance", "visMin",  "educ_15", "move_5yrs", "LICO", "rec_imm", "young", "old", "tenant", "aboriginal", "min", "popDensity_per1000")
+modelColShortName <- dfVarDesc$shortDesc[dfVarDesc$varName %in%  paste("i_", modelCol, sep = "")]
+
+ta <- dfNetwork %>%  
+  st_drop_geometry() %>% 
+  group_by(yearPrevalent) %>% 
+  summarise_at(modelCol,  function(x){
+      m <- median(x, na.rm=TRUE) %>% round(2)
+      q <- x %>% quantile(na.rm=T) %>%  round(2)
+      return(paste(m, "(",q[2], "-" ,q[4], ")",  sep = ""))
+  }
+  ) %>% 
+  t()
+
+write.csv(ta, paste(resultLoc,"/descriptive_table.csv", sep = ""))
+
+```
+
+### Change in network distance 
+Association between quintile of SES indicators and network distance between DA centroid and the road intersection closest to bike infrastructures, for each census year.
+This is a repeated cross-sectional analysis: Membership of DAs in each level of quintile varies across years, since this is not longitudinal analysis. It is not feasible to track the same DA over years due to suppression and change of geoDA ID in each census year. 
+
+Aboriginal and recent immigrants have excess zeros and have no sample space to allow creating groups. Thier line represents the median value. 
+
+Q5 is the group with the highest proportion for each indicator.  
+```{r figQ, fig.height = 19, fig.width = 4}
+theme_set(theme_classic())
+theme_set(
+  theme(
+    text = element_text(size=12), 
+    plot.title = element_text(size=15),   
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+    )
+) 
+ 
+dfSummaryDistance <- dfNetworkLong %>%  
+  group_by(yearPrevalent, x, Q, shortDesc) %>% 
+  summarise(median = median(network_distance, na.rm = TRUE), count = n()) %>% 
+  mutate(Q = factor(Q), x = factor(x), shortDesc = factor(shortDesc))
+
+dfSummaryDistance %>%
+  filter(!is.na(Q)) %>% 
+  ggplot() + 
+  geom_line(aes(x = yearPrevalent, y = median, group = Q, color = Q, linetype = Q))  +
+  theme_classic() +
+  scale_colour_manual(values = c("Black", "black", "grey", "orange", "red")) +
+  scale_linetype_manual(values = c("solid", "dashed", "solid", "dashed", "solid")) +
+  xlab("Census year") + 
+  ylab("Median distance") + 
+  scale_x_discrete(breaks=seq(2011,2021, 5)) +
+  facet_wrap(~ shortDesc, ncol = 1, labeller = label_wrap_gen())  
+
+
+dPlot <- dfSummaryDistance %>%  filter(shortDesc %in% modelColShortName)
+dPlot$shortDesc <- droplevels(dPlot$shortDesc)
+dPlot$shortDesc <- factor(dPlot$shortDesc, levels = c("Visible minorities", "High school", "Recent move", "Low income", "Recent immigrants", "Children", "Seniors", "Tenant", "Aboriginal"))
+
+
+p <- dPlot %>% 
+  filter(!is.na(Q)) %>% 
+  ggplot() + 
+  geom_line(aes(x = yearPrevalent, y = median, group = Q, color = Q, linetype = Q))  +
+  theme_classic() +
+  scale_colour_manual(values = c("Black", "black", "grey", "orange", "red")) +
+  scale_linetype_manual(values = c("solid", "dashed", "solid", "dashed", "solid")) +
+  xlab("Census year") + 
+  ylab("Median distance") + 
+  scale_x_discrete(breaks=seq(2011,2021, 5)) +
+  facet_wrap(~ shortDesc, ncol = 1, labeller = label_wrap_gen()) 
+
+
+ggsave(plot = p, paste(resultLoc,"/descriptive_linesQ.png", sep = ""), width = 3, height = 13)
+saveRDS(p, paste(resultLoc,"/descriptive_linesQ.rds", sep = ""))
+```
+
+
+Save regression data 
+```{r}
+saveRDS(dfNetwork, paste(fileLoc,"/modelVars.rds", sep = ""))
+save.image(paste(fileLoc,"/model.RData", sep = ""))
+```
+
+
+
+
+
+
+
