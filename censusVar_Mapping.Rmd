@@ -1,0 +1,766 @@
+---
+title: "Identification of census variable vectors, Canadian Census 2011, 2016 and 2011"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+Codes below check census vector names from the `Cancensus` R package from census year 2011, 16, and 21.   
+Target variables of interest (all proportion measures) and the corresponding denominators are:      
+   - Visible minority   
+   - Recent immigrant status    
+   - First nation identify    
+   - Education (highest degree as the secondary degree among those 15 over yaers old and among those between 25-65 years old, and having no secondary degree)      
+   - Recent movers (moved past 1 year and 5 years)    
+   - LICO (low income cutoff) - Prevalence measure, so there is no need to calculate denominator for this variable       
+   - Property ownership, and those who pay >30% of income for housing, regardless of property status     
+   - Age category, <15, 15-64, and >65. Census 2011 has different age categorization from the newer census, the numbers of age bing variables differ across census.       
+  
+
+
+```{r, message=FALSE, warning=FALSE }
+# Libraries
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tidyverse)
+library(cancensus)
+library(RPostgres)
+library(rpostgis)
+library(ggplot2)
+
+rm(list=ls())
+
+# cancensus
+options(cancensus.cache_path = "cache/")
+
+
+knitr::opts_chunk$set(echo = T,
+                      results = "hide", 
+                      warning = FALSE, 
+                      message = FALSE)
+                      
+
+# function to check the value of census variables 
+funcCheckCen <- function(yr, vec){
+  get_census(dataset = yr, 
+             regions = list("CSD" = "2434"),
+             vectors = vec,
+             level = "DA")
+}
+
+#list_census_datasets() %>% print(n = Inf)
+#options(cancensus.cache_path = "cache/")
+#CODES_TABLE %>% print(n = Inf)
+
+list_census_datasets() %>% 
+  filter(str_extract(description, "\\d+") %in% c("2021", "2016", "2011"))
+
+
+df_vectorName <- data.frame(year = c("2021", "2016", "2011"))
+
+
+```
+
+
+#  Visible minority   
+```{r}
+
+# Show data vectors 
+find_census_vectors("Visible", 
+  dataset = "CA16", 
+  type = "total", 
+  query_type = "exact")
+
+find_census_vectors("visible mino",
+                    dataset = "CA16",
+                    type = "total",
+                    query_type = "semantic")
+
+find_census_vectors("visible mino",
+                    dataset = "CA11",
+                    type = "total",
+                    query_type = "semantic")
+
+
+# Selected numerator and denominator
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_4875", "v_CA21_4872"))
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_3957", "v_CA16_3954"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_457", "v_CA11N_460"))
+
+# Display some numbers 
+funcCheckCen("CA21", c("v_CA21_4875", "v_CA21_4872", "v_CA21_1")) %>%  
+  select(-c(1:4), -c(8:10))
+```
+
+Save census vectors for denominators and numerators
+```{r}
+
+df_vectorName$visibleMin_count = c(
+  "v_CA21_4875",
+  "v_CA16_3957",
+  "v_CA11N_460") 
+
+df_vectorName$visibleMin_denom = c(
+  "v_CA21_4872",
+  "v_CA16_3954",
+  "v_CA11N_457"
+)
+```
+ 
+
+
+# Recent immigrants 
+```{r}
+find_census_vectors("Immigrant", 
+                    dataset = "CA21", 
+                    type = "total", 
+                    query_type = "exact")
+
+
+# Denominator nad numerator 
+find_census_vectors("Immigrant", 
+                    dataset = "CA16", 
+                    type = "total", 
+                    query_type = "exact")
+
+find_census_vectors("Place of birth for the recent immigrant population in private households", 
+                    dataset = "CA16", 
+                    type = "total", 
+                    query_type = "semantic")
+
+# Denominator and numerator 
+find_census_vectors("Immigrant", 
+                    dataset = "CA11", 
+                    type = "total", 
+                    query_type = "exact")
+
+find_census_vectors("recent immigrant", 
+                    dataset = "CA11", 
+                    type = "total", 
+                    query_type = "semantic")
+
+
+# display descriptors 
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_4404","v_CA21_4635"))
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in%  c("v_CA16_3405","v_CA16_3636"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in%  c("v_CA11N_16","v_CA11N_265"))
+
+
+# Display numbers to check 
+funcCheckCen("CA21", c("v_CA21_4404","v_CA21_4635"))  %>%  select(-c(1:4), -c(8:10))
+funcCheckCen("CA16", c("v_CA16_3405","v_CA16_3636")) %>%  select(-c(1:4), -c(8:10))
+funcCheckCen("CA11", c("v_CA11N_16","v_CA11N_265"))%>%  select(-c(1:4), -c(8:10))
+
+
+```
+
+Save census vectors for denominators and numerators
+```{r}
+df_vectorName$recentImmig_count = c(
+  "v_CA21_4635",
+  "v_CA16_3636",
+  "v_CA11N_265") 
+
+df_vectorName$recentImmig_denom = c(
+  "v_CA21_4404",
+  "v_CA16_3405",
+  "v_CA11N_16"
+)
+```
+# First nation identity    
+```{r}
+
+
+find_census_vectors("Indigenous Identity", 
+                    dataset = "CA21", 
+                    type = "total", 
+                    query_type = "semantic")
+
+find_census_vectors("Indigenous Identity", 
+                    dataset = "CA16", 
+                    type = "total", 
+                    query_type = "semantic")
+
+find_census_vectors("Identity", 
+                    dataset = "CA11", 
+                    type = "total", 
+                    query_type = "semantic")
+
+
+
+
+
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_4201","v_CA21_4204"))  
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_3855","v_CA16_3852"))  
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1351","v_CA11N_1354"))  
+
+
+
+```
+Save census vectors for denominators and numerators
+```{r}
+df_vectorName$indigi_count = c(
+  "v_CA21_4204",
+  "v_CA16_3855",
+  "v_CA11N_1354") 
+
+df_vectorName$indigi_denom = c(
+  "v_CA21_4201",
+  "v_CA16_3852",
+  "v_CA11N_1351"
+)
+
+
+
+```
+ 
+
+# Education - denominator (15 yrs old and 25-64 yrs old)
+```{r}
+
+# Denominators, >15 and 24-65
+find_census_vectors("education total highest",
+  dataset = "CA21",
+  type = "total",
+  query_type = "semantic") 
+
+
+# Denominators, >15 and 24-65
+find_census_vectors("education",
+  dataset = "CA16",
+  type = "total",
+  query_type = "semantic") 
+
+
+# Denominators, >15 and 24-65
+find_census_vectors("education total",
+                    dataset = "CA11",
+                    type = "total",
+                    query_type = "semantic") 
+
+
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_5817", "v_CA21_5865"))
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_5096", "v_CA16_5051"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1771", "v_CA11N_1801"))
+
+
+
+
+```
+Save census vectors for denominators and numerators
+```{r}
+# Record
+df_vectorName$educ_HS_denom_15yr = c(
+  "v_CA21_5817",
+  "v_CA16_5051",
+  "v_CA11N_1771") 
+
+df_vectorName$educ_HS_denom_25_64yr = c(
+  "v_CA21_5865",
+  "v_CA16_5096",
+  "v_CA11N_1801") 
+```
+ 
+# Education - two numerators (15 yrs old and 24-65 yrs old)
+# Proportion of those whose highest degree is secondary (high school) degree, but not post-secondary nor non-high school degree 
+Also get vectors for the count of non-high school finishers 
+```{r}
+
+find_census_vectors("high school secondary",
+                    dataset = "CA21",
+                    type = "total",
+                    query_type = "semantic")
+
+list_census_vectors("CA21") %>% 
+  filter(grepl('v_CA21_58', vector)) %>% 
+  filter(type == "Total") 
+
+find_census_vectors("Total High (secondary) school diploma or equivalency certificate",
+  dataset = "CA21",
+  type = "total",
+  query_type = "semantic")
+
+
+
+
+
+## 2016 ------------------
+find_census_vectors("education",
+  dataset = "CA16",
+  type = "total",
+  query_type = "semantic")
+
+list_census_vectors("CA16") %>% 
+  filter(grepl('v_CA21_58', vector)) %>% 
+  filter(type == "Total") 
+
+
+find_census_vectors("education secondary",
+                    dataset = "CA16",
+                    type = "total",
+                    query_type = "semantic")
+
+find_census_vectors("no secondary",
+                    dataset = "CA16",
+                    type = "total",
+                    query_type = "semantic")
+
+
+## 2011 --------------------------------------
+
+find_census_vectors("education secondary",
+                    dataset = "CA11",
+                    type = "total",
+                    query_type = "semantic") 
+
+
+
+
+# List variables ---- 
+# Highest educ is high school 
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_5823", "v_CA21_5871"))
+# No high school educ 
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_5820", "v_CA21_5868"))
+
+
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_5057", "v_CA16_5102"))
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_5144", "v_CA16_5330"))
+
+
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1777", "v_CA11N_1807"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1774", "v_CA11N_1804"))
+
+
+
+
+```
+Save census vectors for denominators and numerators
+
+```{r}
+
+# secondary degree holders 
+df_vectorName$educ_HS_count_15yr = c(
+  "v_CA21_5823",
+  "v_CA16_5057",
+  "v_CA11N_1777") 
+
+df_vectorName$educ_HS_count_25_64yr = c(
+  "v_CA21_5871",
+  "v_CA16_5102",
+  "v_CA11N_1807") 
+
+# those with no degree 
+df_vectorName$educ_no_HS_count_15yr = c(
+  "v_CA21_5820",
+  "v_CA16_5144",
+  "v_CA11N_1774") 
+
+df_vectorName$educ_no_HS_count_25_64yr = c(
+  "v_CA21_5868",
+  "v_CA16_5330",
+  "v_CA11N_1804") 
+
+
+
+
+
+
+
+```
+ 
+
+
+# Recent movers, 1 and 5 yrs ago
+```{r}
+find_census_vectors("mover",
+                    dataset = "CA21",
+                    type = "total",
+                    query_type = "semantic") 
+
+find_census_vectors("mobility",
+                    dataset = "CA16",
+                    type = "total",
+                    query_type = "semantic")
+
+find_census_vectors("mobility",
+                    dataset = "CA11",
+                    type = "total",
+                    query_type = "semantic")
+
+
+# Numerator
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_5751","v_CA21_5778")) 
+
+# Numerator
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_6725", "v_CA16_6698"))
+
+# Numerator
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1723","v_CA11N_1750"))
+
+# Denom 
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_5745","v_CA21_5772"))
+# Denom 
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_6692", "v_CA16_6719"))
+# Denom 
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_1717","v_CA11N_1744"))
+
+
+```
+Save census vectors for denominators and numerators
+
+```{r}
+df_vectorName$move_1yr_count = c(
+  "v_CA21_5751",
+  "v_CA16_6698",
+  "v_CA11N_1723") 
+
+df_vectorName$move_5yr_count = c(
+  "v_CA21_5778",
+  "v_CA16_6725",
+  "v_CA11N_1750") 
+
+
+
+df_vectorName$move_1yr_denom = c(
+  "v_CA21_5745",
+  "v_CA16_6692",
+  "v_CA11N_1717") 
+
+df_vectorName$move_5yr_denom = c(
+  "v_CA21_5772",
+  "v_CA16_6719",
+  "v_CA11N_1744") 
+```
+ 
+
+# Prevalance of LICO
+```{r}
+find_census_vectors("LICO",
+                    dataset = "CA21",
+                    type = "total",
+                    query_type = "semantic")
+
+
+find_census_vectors("LICO",
+                    dataset = "CA16",
+                    type = "total",
+                    query_type = "semantic")
+
+
+find_census_vectors("LICO",
+                    dataset = "CA11",
+                    type = "total",
+                    query_type = "semantic")
+
+
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_1085")) 
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_2570"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_2606"))
+
+```
+Save census vectors for denominators and numerators
+```{r}
+
+# Record
+df_vectorName$LICO_prevalence = c(
+  "v_CA21_1085",
+  "v_CA16_2570",
+  "v_CA11N_2606") 
+
+```
+
+
+
+# Property owners, and people paying >30% of income for housing regardless of property ownership 
+```{r}
+
+find_census_vectors(c("Owner"), 
+                    dataset = "CA21", type = "total", query_type = "semantic") %>%  print(n=100)
+find_census_vectors(c("Tenant"), 
+                    dataset = "CA21", type = "total", query_type = "semantic") %>%  print(n=100)
+
+
+
+find_census_vectors(c("Owner"), 
+                    dataset = "CA16", type = "total", query_type = "semantic") %>%  print(n=100)
+find_census_vectors(c("Tenant"), 
+                    dataset = "CA16", type = "total", query_type = "semantic") %>%  print(n=100)
+
+
+
+find_census_vectors(c("Owner"), 
+                    dataset = "CA11", type = "total", query_type = "semantic") %>%  print(n=100)
+find_census_vectors(c("Tenant"), 
+                    dataset = "CA11", type = "total", query_type = "semantic") %>%  print(n=100)
+
+
+
+# Denominator - total households with renting and owning , and income expenditure 
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_4288", "v_CA21_4290", "v_CA21_4305", "v_CA21_4313"))
+
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_4886", "v_CA16_4888", "v_CA16_4890", "v_CA16_4897"))
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11N_2277", "v_CA11N_2281", "v_CA11N_2288", "v_CA11N_2279"))
+
+
+
+funcCheckCen("CA21", c(
+  "v_CA21_4288", # Owner and tenant households with household total income greater than zero, in non-farm, non-reserve private dwellings by shelter-cost-to-income ratio
+  "v_CA21_4290", # Spending 30% or more of income on shelter costs
+  "v_CA21_4305", # Total - Owner households in non-farm, non-reserve private dwellings
+  "v_CA21_4313") # Total - Tenant households in non-farm, non-reserve private dwellings
+  ) %>%  
+select(-c(1:4), -c(8:10))
+
+
+funcCheckCen("CA16", 
+    c("v_CA16_4886", 
+    "v_CA16_4888", 
+    "v_CA16_4890", 
+    "v_CA16_4897")
+  ) %>%  
+select(-c(1:4), -c(8:10))
+
+
+funcCheckCen("CA11",  
+    c("v_CA11N_2277", 
+    "v_CA11N_2281", 
+    "v_CA11N_2288", 
+    "v_CA11N_2279")
+  ) %>%  
+select(-c(1:4), -c(8:10))
+
+
+```
+Save census vectors for denominators and numerators
+```{r}
+
+df_vectorName$property_denom = c(
+  "v_CA21_4288",
+  "v_CA16_4886",
+  "v_CA11N_2277") 
+
+df_vectorName$tenant_count = c(
+  "v_CA21_4313",
+  "v_CA16_4897",
+  "v_CA11N_2288") 
+
+df_vectorName$housingExpend_30_count = c(
+  "v_CA21_4290",
+  "v_CA16_4888",
+  "v_CA11N_2279") 
+```
+
+
+
+
+
+
+
+
+# Age (1-15, 16-65, and >65)
+2011 census data is 5 years bin,not like 2016 and 2021 that have a larger group like 0-14 range. It is possible to get denominator conunt from NHS (e.g. education age denominator like `v_CA21_5820`), but I suspect these denominators are from NHS. Thus, it might be safer to combine small age groups manually for 2021 census. 
+```{r}
+
+# 2021 and 2016
+find_census_vectors("age", 
+  dataset = "CA21", 
+  type = "total", 
+  query_type = "semantic") 
+
+
+find_census_vectors("age", 
+  dataset = "CA16", 
+  type = "total", 
+  query_type = "semantic") 
+
+
+
+# 2011 
+find_census_vectors("age", 
+  dataset = "CA11", 
+  type = "total", 
+  query_type = "semantic") 
+
+# Get more specifc age ranges, extract vector  
+ageVec2011 <- find_census_vectors("Age Groups; Total population by age groups", 
+  dataset = "CA11", 
+  type = "total", 
+  query_type = "semantic") %>%  print(n=200) %>% 
+  select(vector)
+
+# make tibble of census vectors into vector data 
+ageVec2011 <- ageVec2011 %>%  pull()
+
+# Display - do age category varaibles sum up to the "total population" column? 
+df <- funcCheckCen("CA11", ageVec2011)  %>%  
+  select(contains("_CA11F")) %>% 
+  glimpse()
+
+
+
+
+# Target age categories for 2021
+list_census_vectors("CA21") %>% 
+  filter(vector %in% c("v_CA21_8", "v_CA21_11", "v_CA21_68", "v_CA21_251"))
+
+# Target age categories for 2016
+list_census_vectors("CA16") %>% 
+  filter(vector %in% c("v_CA16_1", "v_CA16_4", "v_CA16_61", "v_CA16_244"))
+
+# Target age categories for 2011
+list_census_vectors("CA11") %>% 
+  filter(vector %in% c("v_CA11F_5", "v_CA11F_8", "v_CA11F_11", "v_CA11F_14", "v_CA11F_20"))
+
+vecAge <- "v_CA11F_20:v_CA11F_23:v_CA11F_26:v_CA11F_29:v_CA11F_32:v_CA11F_35:v_CA11F_38:v_CA11F_41:v_CA11F_44:v_CA11F_47:v_CA11F_50:v_CA11F_53:v_CA11F_56:v_CA11F_59" 
+vecAge <- str_split(vecAge, ":") %>% unlist()
+
+list_census_vectors("CA11") %>% 
+  filter(vector %in% vecAge) %>% 
+  print(n = 30)
+
+funcCheckCen("CA11", vecAge)  %>%  
+  select(-c(1:4), -c(8:10)) %>% 
+  select(Population, contains("years")) %>% 
+  glimpse()
+
+
+
+# Target age categories for 2021
+funcCheckCen("CA21",  
+  c("v_CA21_8", "v_CA21_11", "v_CA21_68", "v_CA21_251")) %>%  
+  select(-c(1:4), -c(8:10)) %>% 
+  glimpse()
+# Target age categories for 2016
+funcCheckCen("CA16", 
+  c("v_CA16_1", "v_CA16_4", "v_CA16_61", "v_CA16_244"))  %>% 
+  select(-c(1:4), -c(8:10)) %>% 
+  glimpse()
+
+# 2011 Age 0-14, more grouping than the other census 
+funcCheckCen("CA11", 
+  c("v_CA11F_5", "v_CA11F_8", "v_CA11F_11", "v_CA11F_14", "v_CA11F_20"))  %>% 
+  select(-c(1:4), -c(8:10))  %>% 
+  glimpse()
+# 2011 Age 15-65, more grouping than the other census 
+funcCheckCen("CA11", vecAge)  %>% 
+  select(-c(1:4), -c(8:10)) %>% 
+  glimpse()
+
+
+```
+Save census vectors for denominators and numerators
+```{r}
+
+df_vectorName$age_denom = c(
+  "v_CA21_8",
+  "v_CA16_1",
+  "v_CA11F_5") 
+
+df_vectorName$age_1_14_count = c(
+  "v_CA21_11",
+  "v_CA16_4",
+  "v_CA11F_8:v_CA11F_11:v_CA11F_14") 
+
+df_vectorName$age_15_64_count = c(
+  "v_CA21_68",
+  "v_CA16_61",
+  "v_CA11F_20:v_CA11F_23:v_CA11F_26:v_CA11F_29:v_CA11F_32:v_CA11F_35:v_CA11F_38:v_CA11F_41:v_CA11F_44:v_CA11F_47:v_CA11F_50:v_CA11F_53:v_CA11F_56:v_CA11F_59") 
+
+df_vectorName$age_64_over = c(
+  "v_CA21_251",
+  "v_CA16_244",
+  NA) 
+```
+
+
+#### Transpose so that the columns will be census years
+```{r}
+rownames(df_vectorName) <- df_vectorName$year
+dfVars <- df_vectorName %>% t %>% data.frame 
+dfVars <- dfVars[row.names(dfVars) != "year", , drop = FALSE]
+
+saveRDS(dfVars, "data/censMappedVars.rds")
+
+# Following codes will extract the census vectors, along with polygons 
+#b <- dfVars %>% pull(X2021)
+#b <- setNames(b, rownames(a)) # Make it named vector so that variable names will be passed to extracted census vars  
+#cen <- get_census(dataset='CA21', regions=list(CSD="5915022"),
+#  vectors=b, level='DA', use_cache = FALSE, geo_format = "sf", quiet = TRUE, 
+#  api_key = Sys.getenv("CM_API_KEY"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
